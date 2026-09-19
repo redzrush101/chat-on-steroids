@@ -2313,7 +2313,10 @@
       }
     }
     flushStreamRequestOrigins();
-    if (conversationChanged) window.postMessage({ type: 'cos-usage-request' }, location.origin);
+    if (conversationChanged) {
+      window.postMessage({ type: 'cos-usage-request' }, location.origin);
+      if (id) window.postMessage({ type: 'cos-conversation-snapshot-request', conversationId: id }, location.origin);
+    }
     // Route assignment and authored text can arrive in either order. This receipt is
     // evaluated on the existing observer, rather than only on the one route-change edge.
     if (id && pendingObjectiveSend?.accepted && pendingObjectiveSend.current()) {
@@ -10311,7 +10314,7 @@
     if (await failIfRetargeted()) return;
 
     if ((boot.model || boot.reasoningEffort) && !(await CLF_DOM.selectModelSettings(boot.model, boot.reasoningEffort, stillOnTarget,
-      (node, action) => providerInput(node, action, stillOnTarget)))) {
+      (node, action) => providerInput(node, action, stillOnTarget), providerModelSnapshot))) {
       return void (await fail('The requested model or reasoning is unavailable or could not be confirmed in ChatGPT'));
     }
     const selectionConfirmedAt = Date.now();
@@ -10762,6 +10765,8 @@
     emit(observation);
   });
   window.postMessage({ type: 'cos-usage-request' }, location.origin);
+  if (conversationId && conversationId === CLF_DOM.conversationId())
+    window.postMessage({ type: 'cos-conversation-snapshot-request', conversationId }, location.origin);
   let desktopDecision = null;
   let desktopDecisionSession = null;
   let desktopInputBusy = false;
@@ -11024,7 +11029,7 @@
       const limitation = providerLimitation();
       if (limitation) return fail(limitation);
       if (!(await CLF_DOM.selectModelSettings(input.model, input.reasoningEffort, onTarget,
-        (node, action) => providerInput(node, action, onTarget)))) return fail(providerLimitation() || 'Requested model or reasoning could not be confirmed');
+        (node, action) => providerInput(node, action, onTarget), providerModelSnapshot))) return fail(providerLimitation() || 'Requested model or reasoning could not be confirmed');
       if (!onTarget() || CLF_DOM.generating() || (!ownsFreshPage() && (CLF_DOM.composer()?.textContent || '').trim()) || CLF_DOM.hasComposerAttachments()) return fail('The ChatGPT composer changed before sending');
       if (!CLF_DOM.insertPrompt(input.text, ownsFreshPage())) return fail('ChatGPT did not accept the text');
       const sendingTarget = submittedSendLifetime(target, forEpoch);

@@ -10,7 +10,7 @@
  */
 (() => {
   'use strict';
-  const OBSERVER_VERSION = 2;
+  const OBSERVER_VERSION = 3;
   if (window.__cosUsageObserver === OBSERVER_VERSION) return;
   // A version marker lets background.js repair MAIN-world observation in already-open tabs
   // after an extension upgrade. Older observers may finish work already in flight, while every
@@ -31,8 +31,22 @@
   const streamMessages = new Map();
   let latestModels = null;
   let modelFetchFlight = null;
+  const historyFetchFlights = new Map();
   const originReaders = new Set();
   const ORIGIN_LISTEN_MS = 15 * 60_000;
+  function conversationFromPath(pathname) {
+    const match = /^\/(?:c|g\/[^/]+\/c)\/([0-9a-f-]{36})\/?$/i.exec(pathname);
+    return match && CONVERSATION.test(match[1]) ? match[1].toLowerCase() : null;
+  }
+  function requestConversationSnapshot(conversationId) {
+    const route = conversationFromPath(location.pathname);
+    if (!current() || !CONVERSATION.test(conversationId) || route !== conversationId.toLowerCase() || historyFetchFlights.has(route)) return;
+    const work = Promise.resolve().then(() => window.fetch(`/backend-api/conversations/${encodeURIComponent(route)}`))
+      .then(response => { if (!response?.ok) throw new Error('history_unavailable'); })
+      .catch(() => undefined)
+      .finally(() => { if (historyFetchFlights.get(route) === work) historyFetchFlights.delete(route); });
+    historyFetchFlights.set(route, work);
+  }
   function publishOrigin(conversationId, requestIds, observedAt) {
     if (!current()) return;
     const fresh = requestIds.filter(id => !origins.has(`${conversationId}:${id}`));
@@ -404,6 +418,10 @@
       }
       return;
     }
+    if (event.data?.type === 'cos-conversation-snapshot-request') {
+      requestConversationSnapshot(event.data.conversationId);
+      return;
+    }
     if (event.data?.type !== 'cos-usage-request') return;
     if (latest) post(latest, location.origin);
     if (latestModels) post(latestModels, location.origin);
@@ -421,5 +439,6 @@
     origins.clear();
     streamMessages.clear();
     latestModels = null;
+    historyFetchFlights.clear();
   });
 })();

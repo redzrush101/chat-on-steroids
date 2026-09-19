@@ -2275,6 +2275,38 @@ var CLF_DOM = (() => {
         node.id !== 'composer-plus-btn' && node.getAttribute('data-testid') !== 'composer-plus-btn');
     return candidates.length === 1 ? candidates[0] : null;
   }
+  const providerEffort = (preset, workModel = false) => {
+    const native = preset?.thinkingEffort;
+    if (preset?.lane === 'instant') return 'none';
+    if (preset?.lane === 'pro') return 'pro';
+    if (native === 'max') return workModel ? 'max' : 'xhigh';
+    return ({ min: 'low', standard: 'medium', extended: 'high', minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', ultra: 'ultra' })[native] || null;
+  };
+  /**
+   * The A/B composer exposes its selected effort as provider-owned DOM, while the
+   * provider models response binds that effort to an exact slug and enabled model
+   * family. Together those two independent facts can prove an unchanged default
+   * selection even when React's private picker owner moved in a UI rollout.
+   */
+  function providerSnapshotConfirmsModelSettings(model, effort, snapshot) {
+    const trigger = modelPickerTrigger();
+    if (!activeAbComposer() || !trigger || trigger.getAttribute('aria-expanded') === 'true' || trigger.getAttribute('data-state') === 'open') return false;
+    const selectedEffort = ({ none: 'none', instant: 'none', minimal: 'minimal', min: 'low', low: 'low', standard: 'medium', medium: 'medium', extended: 'high', high: 'high', xhigh: 'xhigh', max: 'xhigh', ultra: 'ultra', pro: 'pro' })[
+      trigger.getAttribute('data-selected-reasoning-effort')
+    ] || null;
+    if (!selectedEffort || (effort && selectedEffort !== effort)) return false;
+    if (!model) return Boolean(effort);
+    if (!snapshot || typeof snapshot !== 'object' || typeof snapshot.defaultModelSlug !== 'string' ||
+        !Array.isArray(snapshot.models) || !Array.isArray(snapshot.versions)) return false;
+    const defaultRow = snapshot.models.find(row => row?.slug === snapshot.defaultModelSlug);
+    const requested = snapshot.models.filter(row => row?.slug === model || normalizeModelLabel(row?.title) === normalizeModelLabel(model));
+    if (!defaultRow || requested.length !== 1 || requested[0].title !== defaultRow.title) return false;
+    const requestedRow = requested[0];
+    return snapshot.versions.some(version => version?.enabled === true && Array.isArray(version.slugs) &&
+      version.slugs.includes(snapshot.defaultModelSlug) && version.slugs.includes(requestedRow.slug) &&
+      Array.isArray(version.presets) && version.presets.some(preset => preset?.presetType === 'available' &&
+        preset.modelSlug === requestedRow.slug && providerEffort(preset, requestedRow.isWorkModeModel === true) === selectedEffort));
+  }
   /** Match the row's leading name, excluding secondary captions and decorations. */
   function pickerVersionNamed(row, expected) {
     const text = node => String(node.textContent || '').replace(/\s+/g, ' ').trim();
@@ -2558,8 +2590,9 @@ var CLF_DOM = (() => {
     // changed; restoration/closure remain mandatory after any mutation attempt.
     return closed && stillCurrent() && result.size ? [...result.values()] : null;
   }
-  async function selectModelSettings(model, effort, stillCurrent = () => true, trustedInput = null) {
+  async function selectModelSettings(model, effort, stillCurrent = () => true, trustedInput = null, providerSnapshot = null) {
     if (!model && !effort) return true;
+    if (stillCurrent() && providerSnapshotConfirmsModelSettings(model, effort, providerSnapshot)) return true;
     const matches = c => c.available && (!effort || c.effort === effort) && (!model || c.familyId === model || c.id === model || normalizeModelLabel(c.familyLabel) === normalizeModelLabel(model) || normalizeModelLabel(c.label) === normalizeModelLabel(model));
     const closedState = activeAbComposer() ? await readPickerState() : null;
     const closedChoice = closedState?.choices.find(c => c.bucket === closedState.currentBucket);
@@ -2687,6 +2720,7 @@ var CLF_DOM = (() => {
     pluginRefreshView,
     pluginInstalledButtons,
     pluginManagementIdle,
+    providerSnapshotConfirmsModelSettings,
     selectModelSettings,
     temporaryChatReady: () => safe(() => [...document.querySelectorAll('button')].some(button => {
       if (button.closest(`${OWN_SURFACES}, ${TURN}, [data-message-author-role]`) || !button.getClientRects().length) return false;

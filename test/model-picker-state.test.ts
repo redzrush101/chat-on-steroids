@@ -132,6 +132,37 @@ function fixture(versionCaption = '', closeDelay: number | null = 0, renderer: '
   win.eval(fiberSource); win.eval(domSource);
   return { api: (win as any).CLF_DOM, state, props, selections, actions, freeze: () => { frozen = true; } };
 }
+const providerSnapshot = {
+  modelPickerVersion: 2,
+  defaultModelSlug: 'gpt-5-6',
+  models: [
+    { slug: 'gpt-5-6', title: 'GPT-5.6 Sol', reasoningType: 'auto', configurableThinkingEffort: false, thinkingEfforts: [], isWorkModeModel: false },
+    { slug: 'gpt-5-6-thinking', title: 'GPT-5.6 Sol', reasoningType: 'reasoning', configurableThinkingEffort: true, thinkingEfforts: ['standard', 'extended'], isWorkModeModel: false }
+  ],
+  versions: [{ id: '5.6', label: 'GPT-5.6', enabled: true, slugs: ['gpt-5-6', 'gpt-5-6-thinking'], presets: [
+    { modelSlug: 'gpt-5-6-thinking', lane: 'thinking', title: 'Medium', presetType: 'available', thinkingEffort: 'standard' },
+    { modelSlug: 'gpt-5-6-thinking', lane: 'thinking', title: 'High', presetType: 'available', thinkingEffort: 'extended' }
+  ] }]
+};
+it('confirms the closed A/B default from explicit effort DOM plus the provider model snapshot when Fiber moved', async () => {
+  const f = fixture('', 0, 'ab'), trigger = page.window.document.querySelector('button')!;
+  delete (trigger as any).__reactFiber$test;
+  const trustedInput = vi.fn();
+  expect(f.api.providerSnapshotConfirmsModelSettings('gpt-5-6-thinking', 'high', providerSnapshot)).toBe(true);
+  expect(await f.api.selectModelSettings('gpt-5-6-thinking', 'high', () => true, trustedInput, providerSnapshot)).toBe(true);
+  expect(trustedInput).not.toHaveBeenCalled();
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
+});
+it('fails closed when the A/B effort or provider family does not match the requested pair', () => {
+  const f = fixture('', 0, 'ab'), trigger = page.window.document.querySelector('button')!;
+  trigger.setAttribute('data-selected-reasoning-effort', 'medium');
+  expect(f.api.providerSnapshotConfirmsModelSettings('gpt-5-6-thinking', 'high', providerSnapshot)).toBe(false);
+  trigger.setAttribute('data-selected-reasoning-effort', 'high');
+  const foreign = { ...providerSnapshot, defaultModelSlug: 'other', models: [
+    ...providerSnapshot.models, { slug: 'other', title: 'Another model', reasoningType: 'auto', configurableThinkingEffort: false, thinkingEfforts: [], isWorkModeModel: false }
+  ] };
+  expect(f.api.providerSnapshotConfirmsModelSettings('gpt-5-6-thinking', 'high', foreign)).toBe(false);
+});
 it('waits for the model picker to close before allowing composer insertion', async () => {
   const f = fixture('', 30);
   expect(await f.api.selectModelSettings('future-model', 'ultra')).toBe(true);

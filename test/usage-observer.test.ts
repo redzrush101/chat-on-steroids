@@ -8,6 +8,8 @@ function harness() {
   let now = Date.parse('2026-09-05T12:00:00Z');
   class Clock extends Date { static override now() { return now; } }
   let response: unknown;
+  const fetchCalls: unknown[][] = [];
+  const location = { origin: 'https://chatgpt.com', pathname: '/' };
   let nextBodyGate: Promise<void> | null = null;
   const timers = new Map<number, { at: number; run: () => void }>();
   let timerId = 0;
@@ -22,7 +24,7 @@ function harness() {
   }
   const window = {
     WebSocket: Socket,
-    fetch: (..._args: unknown[]) => Promise.resolve(response),
+    fetch: (...args: unknown[]) => { fetchCalls.push(args); return Promise.resolve(response); },
     postMessage: (data: unknown) => posts.push(JSON.parse(JSON.stringify(data))),
     addEventListener: (type: string, handler: (event: unknown) => void, options?: { once?: boolean }) => {
       const rows = listeners.get(type) ?? [];
@@ -35,10 +37,10 @@ function harness() {
     listeners.set(type, rows.filter(row => !row.once));
     for (const row of rows) row.handler(event);
   };
-  runInNewContext(script, { window, document, location: { origin: 'https://chatgpt.com' }, URL, Date: Clock, TextDecoder,
+  runInNewContext(script, { window, document, location, URL, Date: Clock, TextDecoder,
     setTimeout: (run: () => void, ms: number) => { timers.set(++timerId, { at: now + ms, run }); return timerId; },
     clearTimeout: (id: number) => timers.delete(id) });
-  async function feed(data: unknown, url = 'https://chatgpt.com/backend-api/wham/usage', init: Record<string, unknown> = {}) {
+  function jsonResponse(data: unknown, url: string) {
     let done: () => void = () => {};
     const inspected = new Promise<void>(resolve => { done = resolve; });
     let read = false;
@@ -48,11 +50,15 @@ function harness() {
       read: async () => { await bodyGate; return read ? { done: true } : (read = true, { done: false, value: body }); },
       cancel: async () => { done(); }
     }) } }) };
+    return { inspected, response };
+  }
+  async function feed(data: unknown, url = 'https://chatgpt.com/backend-api/wham/usage', init: Record<string, unknown> = {}) {
+    const staged = jsonResponse(data, url);
     const expectedResponse = response;
     const returned = await window.fetch('/endpoint', { headers: { Authorization: 'private-test-value' }, ...init });
     expect(returned).toBe(expectedResponse);
     if (new URL(url).origin === 'https://chatgpt.com' &&
-        /^\/backend-api\/(wham\/usage|conversation\/init|conversation\/prepare|models|conversation(?:s)?\/[0-9a-f-]{36})$/.test(new URL(url).pathname)) await inspected;
+        /^\/backend-api\/(wham\/usage|conversation\/init|conversation\/prepare|models|conversation(?:s)?\/[0-9a-f-]{36})$/.test(new URL(url).pathname)) await staged.inspected;
     else await new Promise(resolve => setTimeout(resolve, 0));
   }
   async function feedSse(chunks: string[], init: Record<string, unknown> = { method: 'POST' }, url = 'https://chatgpt.com/backend-api/conversation') {
@@ -106,7 +112,17 @@ function harness() {
     currentFetch: () => window.fetch,
     holdNextBody: () => { let release = () => {}; nextBodyGate = new Promise<void>(resolve => { release = resolve; }); return () => release(); },
     advance: (ms: number) => { now += ms; for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.run(); } },
-    request: (source: unknown = window, origin = 'https://chatgpt.com') => dispatch('message', { source, origin, data: { type: 'cos-usage-request' } })
+    request: (source: unknown = window, origin = 'https://chatgpt.com') => dispatch('message', { source, origin, data: { type: 'cos-usage-request' } }),
+    requestConversation: async (conversationId: string, data: unknown, pathname = `/c/${conversationId}`,
+      source: unknown = window, origin = 'https://chatgpt.com') => {
+      location.pathname = pathname;
+      const staged = jsonResponse(data, `https://chatgpt.com/backend-api/conversations/${conversationId}`);
+      const before = fetchCalls.length;
+      dispatch('message', { source, origin, data: { type: 'cos-conversation-snapshot-request', conversationId } });
+      if (source === window && origin === location.origin && pathname.endsWith(conversationId)) await staged.inspected;
+      else await Promise.resolve();
+      return fetchCalls.slice(before);
+    }
   };
 }
 
@@ -418,7 +434,8 @@ describe('MAIN-world usage projection', () => {
         } }
       }
     };
-    await h.feed(history, `https://chatgpt.com/backend-api/conversations/${conversationId}?num_turns=10&include_has_versions=true`);
+    const calls = await h.requestConversation(conversationId, history);
+    expect(calls).toEqual([[`/backend-api/conversations/${conversationId}`]]);
     expect(h.posts.filter(row => row.type === 'cos-stream-message').map(row => row.message.text))
       .toEqual(['Question', 'Chosen answer', 'Public commentary']);
     expect(JSON.stringify(h.posts)).not.toContain('Unselected retry');

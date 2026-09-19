@@ -79,3 +79,28 @@ one model/reasoning change, and one streamed response on the A/B renderer, plus 
 renderer smoke test. No browser-control surface was available for that interactive pass in this
 session. The private capture contained live authentication material; no tokens, cookies, account
 ids, conversation ids, or raw private capture content are stored in this repository or worklog.
+
+## Live-capture follow-up
+
+The first installed A/B build exposed two additional cold-attach failures. The page-model helper
+could no longer read the moved private React picker owner, so desktop input stopped before Send
+even though the closed composer explicitly showed High and the provider model catalog had already
+been captured. Separately, replies that completed before MAIN-world observation attached were not
+replayed, because the page had loaded conversation history before the fetch observer existed.
+
+- Closed A/B selection can now be confirmed without opening the fragile private picker only when
+  the provider-owned effort attribute, the exact requested model slug, the enabled provider model
+  family/version, and an available provider preset all agree. Mismatched effort/family evidence
+  remains fail-closed, and actual changes still use the native picker confirmation path.
+- On initial bind and each exact conversation route transition, the isolated script requests one
+  same-origin history snapshot. The MAIN-world observer validates the current route and UUID,
+  deduplicates concurrent requests, fetches the ordinary conversation-history endpoint, and feeds
+  the response through the existing bounded public-message projection. It does not poll and does
+  not expose private analysis, tool metadata, credentials, or arbitrary response fields.
+- The observer generation is now 3 so an extension reload supersedes the already-installed v2
+  MAIN-world observer in open tabs.
+
+The focused regression pass (`model-picker-state`, `usage-observer`, and `content-script`) passes
+744 / 744 tests. Final `npm run verify:ci` exits 0 with 204 files passed and 13 skipped, 5,334 tests
+passed and 134 skipped, plus 6 / 6 shutdown tests. Privacy, notice/native-source, TypeScript,
+Electron-resolution, and `git diff --check` gates also pass.
