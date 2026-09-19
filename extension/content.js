@@ -707,6 +707,11 @@
    */
   const USER_SEND_RECEIPT_MS = 30_000;
   let userSendReceipt = null;
+  // Provider-authored user messages are the canonical acceptance identity for renderer
+  // variants whose DOM exposes only presentation search-unit keys. Keep a short in-document
+  // cache so the one native Send can join a fresh rendered row to the exact provider UUID.
+  // History/backfill rows are fenced again by authored time and the pre-Send key snapshot.
+  const streamUserReceipts = new Map();
   const pageViewChecks = new Set(); // Existing readiness waits also observe accepted MAIN-world snapshots.
   const sendText = (value) => String(value || '').replace(/\s+/g, '');
   /** Undo page-readback punctuation escapes only; never rewrite authored Send text. */
@@ -1128,6 +1133,29 @@
     if (current && !current()) return null;
     observed.blocked = null;
     return sendToWorker({ ...message, navigationEpoch: epoch });
+  }
+
+  /**
+   * Radix/Popover controls in the 2026-09 ChatGPT renderer ignore synthetic DOM activation.
+   * Ask the exact registered tab to dispatch one browser-trusted click/key while this document
+   * still owns the operation. Coordinates come only from the provider element selected by the
+   * DOM adapter; arbitrary page scripts never receive this bridge.
+   */
+  async function providerInput(node, action, current = () => true) {
+    if (!node?.isConnected || !current()) return false;
+    let wire;
+    if (action?.kind === 'click') {
+      let rect;
+      try { rect = node.getBoundingClientRect(); } catch { return false; }
+      const x = rect && rect.left + rect.width / 2, y = rect && rect.top + rect.height / 2;
+      if (![x, y].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0 || x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
+      wire = { kind: 'click', x, y };
+    } else if (action?.kind === 'key' && ['Enter', 'Escape', 'ArrowLeft', 'ArrowRight'].includes(action.key)) {
+      wire = { kind: 'key', key: action.key };
+    } else return false;
+    const ownedEpoch = epoch;
+    const reply = await ask({ type: 'provider_input', action: wire }, () => alive && epoch === ownedEpoch && current());
+    return reply?.ok === true && alive && epoch === ownedEpoch && current();
   }
 
   /**
@@ -1944,7 +1972,7 @@
   /** The turn section a node is rendered in, or null. */
   function sectionOf(node) {
     try {
-      return node && node.closest ? node.closest(TURN_SECTION) : null;
+      return CLF_DOM.turnNode ? CLF_DOM.turnNode(node) : null;
     } catch {
       return null;
     }
@@ -2080,6 +2108,13 @@
         // opens the local generation. Re-emitting the transcript would duplicate it, so a seen
         // row contributes only the boundary here.
         const justAuthored = authoredNow(message);
+        // A/B role-unit keys are enough to prove native Send acceptance, but they are not
+        // ChatGPT message UUIDs. Keep that boundary proof while waiting for the provider
+        // stream/Fiber observation to supply durable transcript identity.
+        if (message.presentation === true) {
+          if (justAuthored) newUserMessage = justAuthored;
+          continue;
+        }
         if (seenMessages.has(key) && (reaction === undefined || (seenMessages.get(key) ?? null) === reaction)) {
           if (justAuthored) newUserMessage = justAuthored;
           continue;
@@ -2113,8 +2148,8 @@
       } else if (message.role === 'assistant') {
         // Assistant identity/content comes exclusively from the MAIN-world Fiber scan now.
         // Keeping this DOM fallback would recreate two competing message sources and is the
-        // exact architecture 1.8 removes. User messages remain here because ChatGPT gives
-        // them stable data-message-id values directly in the DOM.
+        // exact architecture 1.8 removes. User messages remain here because the DOM adapter
+        // exposes a stable provider id, directly on legacy rows or from MAIN-world A/B stamps.
         continue;
       }
     }
@@ -2207,7 +2242,8 @@
     // mapping and terminalise a bound worker even though its model kept running. Real tab
     // lifetime is owned by chrome.tabs.onRemoved in background.js; an SPA move is proven
     // here only when another concrete conversation id replaces the old one.
-    if (id && id !== conversationId) {
+    const conversationChanged = Boolean(id && id !== conversationId);
+    if (conversationChanged) {
       // A dispatched opening may learn its route before the provider exposes its exact
       // authored user row. Keep that operation pending; only the receipt below binds it.
       const opening = pendingObjectiveSend?.current() ? {
@@ -2277,6 +2313,7 @@
       }
     }
     flushStreamRequestOrigins();
+    if (conversationChanged) window.postMessage({ type: 'cos-usage-request' }, location.origin);
     // Route assignment and authored text can arrive in either order. This receipt is
     // evaluated on the existing observer, rather than only on the one route-change edge.
     if (id && pendingObjectiveSend?.accepted && pendingObjectiveSend.current()) {
@@ -2691,9 +2728,6 @@
     void flush();
   }
 
-  const turnIdOf = (section) =>
-    section && section.getAttribute ? section.getAttribute('data-turn-id') : null;
-
   /**
    * Watches for connector rows as ChatGPT inserts them, rather than waiting for a tick.
    *
@@ -2799,19 +2833,17 @@
         // descendants are presentation, not new native transcript evidence.
         const changed = [...(record.addedNodes || []), ...(record.removedNodes || [])];
         if (changed.length > 0 && changed.every(ownStreamNode)) return false;
-        if (target.closest && target.closest(TURN_SECTION)) return true;
+        if (CLF_DOM.turnNode?.(target)) return true;
         for (const node of record.addedNodes || []) {
           if (!node || node.nodeType !== 1) continue;
-          if (node.matches(TURN_SECTION) || node.querySelector(TURN_SECTION)) return true;
+          if (CLF_DOM.containsTurn?.(node)) return true;
         }
         return false;
       });
       if (!relevant) return;
-      const authoredSelector = '[data-message-author-role="assistant"], .markdown';
       const nativeAuthoredNode = (node) => {
         const element = node && node.nodeType === 1 ? node : node?.parentElement;
-        return Boolean(element && !ownStreamNode(element) &&
-          (element.matches?.(authoredSelector) || element.closest?.(authoredSelector) || element.querySelector?.(authoredSelector)));
+        return Boolean(element && !ownStreamNode(element) && CLF_DOM.containsAuthoredOutput?.(element));
       };
       idlePresentationPending ||= records.some(record =>
         record.type === 'characterData'
@@ -2880,7 +2912,6 @@
     });
   }
 
-  const TURN_SECTION = 'section[data-testid^="conversation-turn"]';
   let seededPath = null;
 
   /**
@@ -7879,8 +7910,9 @@
     const node = CLF_DOM.firstUserMessage();
     const current = bootstrap && bootstrapOwner?.conversationId === conversationId &&
       bootstrapOwner.epoch === epoch && CLF_DOM.conversationId() === conversationId;
+    const firstMessageId = current && node ? CLF_DOM.messageIdForNode?.(node) : null;
     const message = current && node ? CLF_DOM.messages().find(message => message.role === 'user' &&
-      message.id === node.getAttribute('data-message-id')) : null;
+      message.id === firstMessageId) : null;
     const source = message && bootstrapOwner.messageId === message.id
       ? userMessageSource(message) : null;
     const identity = source ? `${conversationId}:${epoch}:${message.id}:${bootstrap}` : null;
@@ -10278,7 +10310,8 @@
     if (!readyComposer) return void (await fail('ChatGPT never exposed a usable composer for bootstrap'));
     if (await failIfRetargeted()) return;
 
-    if ((boot.model || boot.reasoningEffort) && !(await CLF_DOM.selectModelSettings(boot.model, boot.reasoningEffort, stillOnTarget))) {
+    if ((boot.model || boot.reasoningEffort) && !(await CLF_DOM.selectModelSettings(boot.model, boot.reasoningEffort, stillOnTarget,
+      (node, action) => providerInput(node, action, stillOnTarget)))) {
       return void (await fail('The requested model or reasoning is unavailable or could not be confirmed in ChatGPT'));
     }
     const selectionConfirmedAt = Date.now();
@@ -10669,6 +10702,65 @@
     const observedAt = Number.isFinite(event.data.observedAt) ? event.data.observedAt : Date.now();
     confirmStreamRequestOrigin(claimed, requestIds, observedAt);
   });
+  let providerModelSnapshot = null;
+  window.addEventListener('message', (event) => {
+    if (!alive || event.source !== window || event.origin !== location.origin || event.data?.type !== 'cos-model-snapshot') return;
+    const snapshot = event.data.snapshot;
+    if (!snapshot || typeof snapshot !== 'object' || !Number.isInteger(snapshot.modelPickerVersion) ||
+        !Array.isArray(snapshot.models) || snapshot.models.length === 0 || snapshot.models.length > 80 ||
+        !Array.isArray(snapshot.versions) || snapshot.versions.length === 0 || snapshot.versions.length > 30) return;
+    let size = 0;
+    try { size = JSON.stringify(snapshot).length; } catch { return; }
+    if (size > 40_000) return;
+    providerModelSnapshot = snapshot;
+    for (const check of pageViewChecks) {
+      try { check(); } catch { /* Snapshot waiters are best-effort wakeups only. */ }
+    }
+  });
+  const streamMessageSignatures = new Map();
+  window.addEventListener('message', (event) => {
+    if (!alive || event.source !== window || event.origin !== location.origin || event.data?.type !== 'cos-stream-message') return;
+    const claimed = typeof event.data.conversationId === 'string' ? event.data.conversationId : '';
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claimed)) return;
+    const route = CLF_DOM.conversationId();
+    if (!route || route !== claimed || conversationId !== claimed) return;
+    const raw = event.data.message;
+    if (!raw || typeof raw !== 'object' || (raw.role !== 'user' && raw.role !== 'assistant')) return;
+    const messageId = typeof raw.messageId === 'string' && /^[a-zA-Z0-9._:-]{1,200}$/.test(raw.messageId) ? raw.messageId : null;
+    if (!messageId || typeof raw.text !== 'string' || raw.text.length === 0 || raw.text.length > 256_000) return;
+    const observedAt = Number.isFinite(event.data.observedAt) ? event.data.observedAt : Date.now();
+    const live = event.data.live === true;
+    const authoredAt = Number.isFinite(raw.authoredAt) && raw.authoredAt > 0 ? raw.authoredAt : null;
+    let observation;
+    if (raw.role === 'user') {
+      observation = { kind: 'user_message', messageId, text: raw.text,
+        ...(authoredAt ? { time: authoredAt, authoredTime: true, authoredAt } : { time: observedAt }) };
+      if (live) {
+        const receiptKey = `${claimed}:\u0000${messageId}`;
+        streamUserReceipts.delete(receiptKey);
+        streamUserReceipts.set(receiptKey, { key: receiptKey, conversationId: claimed, messageId, text: raw.text, observedAt, authoredAt, live: true });
+        while (streamUserReceipts.size > 128) streamUserReceipts.delete(streamUserReceipts.keys().next().value);
+        for (const check of pageViewChecks) {
+          try { check(); } catch { /* Receipt observers are best-effort wakeups only. */ }
+        }
+      }
+    } else {
+      const providerMessageId = typeof raw.providerMessageId === 'string' && /^[a-zA-Z0-9._:-]{1,200}$/.test(raw.providerMessageId)
+        ? raw.providerMessageId : null;
+      const state = raw.state === 'final' ? 'final' : 'streaming';
+      if (!providerMessageId) return;
+      observation = { kind: 'assistant_message', messageId, providerMessageId, text: raw.text,
+        state, final: state === 'final', ...(authoredAt ? { authoredAt } : {}), time: observedAt,
+        ...(generating ? { activeNow: true } : {}) };
+    }
+    const signature = JSON.stringify(observation);
+    const key = `${claimed}\u0000${raw.role}\u0000${raw.providerMessageId || messageId}`;
+    if (streamMessageSignatures.get(key) === signature) return;
+    streamMessageSignatures.delete(key);
+    streamMessageSignatures.set(key, signature);
+    while (streamMessageSignatures.size > 128) streamMessageSignatures.delete(streamMessageSignatures.keys().next().value);
+    emit(observation);
+  });
   window.postMessage({ type: 'cos-usage-request' }, location.origin);
   let desktopDecision = null;
   let desktopDecisionSession = null;
@@ -10931,7 +11023,8 @@
       const providerLimitation = () => CLF_DOM.errors().find(error => error.blocking === true)?.text;
       const limitation = providerLimitation();
       if (limitation) return fail(limitation);
-      if (!(await CLF_DOM.selectModelSettings(input.model, input.reasoningEffort, onTarget))) return fail(providerLimitation() || 'Requested model or reasoning could not be confirmed');
+      if (!(await CLF_DOM.selectModelSettings(input.model, input.reasoningEffort, onTarget,
+        (node, action) => providerInput(node, action, onTarget)))) return fail(providerLimitation() || 'Requested model or reasoning could not be confirmed');
       if (!onTarget() || CLF_DOM.generating() || (!ownsFreshPage() && (CLF_DOM.composer()?.textContent || '').trim()) || CLF_DOM.hasComposerAttachments()) return fail('The ChatGPT composer changed before sending');
       if (!CLF_DOM.insertPrompt(input.text, ownsFreshPage())) return fail('ChatGPT did not accept the text');
       const sendingTarget = submittedSendLifetime(target, forEpoch);
@@ -10955,6 +11048,8 @@
       if (!onTarget() || !draft.current() || sendText(CLF_DOM.composer()?.textContent) !== sendText(input.text)) return fail('The composer changed; your draft was preserved');
       const previousUserId = CLF_DOM.messages().filter(row => row.role === 'user').at(-1)?.id;
       rememberUserSend();
+      const sendReceiptAt = userSendReceipt?.at ?? Date.now();
+      const priorStreamUsers = new Set(streamUserReceipts.keys());
       const submittedText = sendText(CLF_DOM.composer()?.textContent);
       if (input.purpose === 'decision') {
         decision = { id: input.id, owner: input.owner, messageId: null, text: input.text, temporary, onTarget: sendingTarget, conversationId: null, epoch: forEpoch, response: '', publishing: false };
@@ -10975,9 +11070,20 @@
         if ((!conversation && !temporary) || (target && !onTarget())) return false;
         const users = CLF_DOM.messages().filter(row => row.role === 'user');
         if ((!target && users.length !== 1) || users.at(-1)?.id !== user.id || user.id === previousUserId || !matchesSubmittedUser(user, submittedText)) return false;
+        let canonicalId = user.presentation === true ? null : user.id;
+        if (!canonicalId) {
+          const candidates = [...streamUserReceipts.values()].filter(candidate =>
+            candidate.conversationId === conversation && !priorStreamUsers.has(candidate.key) &&
+            candidate.live === true && candidate.observedAt >= sendReceiptAt &&
+            candidate.authoredAt && candidate.authoredAt >= sendReceiptAt - 5_000 &&
+            candidate.authoredAt <= Date.now() + 5_000 &&
+            sendText(candidate.text) === submittedText);
+          if (candidates.length !== 1) return false;
+          canonicalId = candidates[0].messageId;
+        }
         // Freeze only identity while native Send still holds the proven row. React
         // may replace it before this async operation resumes; do not rediscover it.
-        receipt = { conversation, user: { id: user.id } };
+        receipt = { conversation, user: { id: canonicalId, renderedId: user.id } };
         return true;
       }))) return false;
       if (!receipt || !sendingTarget()) return false;
@@ -10994,7 +11100,8 @@
         completeDesktopDecision();
       }
       // The claim remains inert if this ACK is lost; no duplicate send after a reload.
-      const acknowledged = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation, messageId: receipt.user?.id, owner: input.owner, lifetime: input.lifetime, ack: true });
+      const acknowledged = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation,
+        messageId: receipt.user.id, owner: input.owner, lifetime: input.lifetime, ack: true });
       const accepted = acknowledged?.data?.ok === true;
       if (accepted && deliveredConversation && receipt.user?.id && sendingTarget() &&
           userSendReceipt === witnessedSendReceipt && witnessedSendReceipt?.text === submittedText &&
@@ -11007,7 +11114,7 @@
       // Stop/composer-clear may precede the exact user row. This receipt, not that early
       // native acceptance, owns retirement of the still-untouched prepared draft. A
       // rejected/cancelled claim, trusted edit, replacement editor or route preserves it.
-      if (accepted && sendingTarget() && CLF_DOM.messages().filter(row => row.role === 'user').at(-1)?.id === receipt.user.id) {
+      if (accepted && sendingTarget() && CLF_DOM.messages().filter(row => row.role === 'user').at(-1)?.id === receipt.user.renderedId) {
         try { await draft.clear(); } catch { /* Unprovable native cleanup preserves the draft. */ }
       }
       return accepted;
@@ -11150,7 +11257,7 @@
         const home = await waitPageView(() => !CLF_DOM.conversationId() && location.pathname === '/' && !CLF_DOM.turns().length, current, 5000);
         if (!home || !current()) return failure();
       }
-      if (!(await CLF_DOM.prepareChatModelSurface(current)) || !current()) return failure();
+      if (!(await CLF_DOM.prepareChatModelSurface(current, (node, action) => providerInput(node, action, current))) || !current()) return failure();
       // A mounted editor can belong to a hidden/alternate surface. Do not stamp
       // it ready and strand the input there; the existing pre-send fallback owns
       // a clean New Chat when the native transition did not produce a usable one.
@@ -11186,6 +11293,26 @@
     modelCatalogBusy = true;
     try {
     const current = () => alive && epoch === ownedEpoch && Date.now() < message.expiresAt;
+    // September's picker-v2 account catalog is already available from ChatGPT's own models
+    // response. Discovery consumes that snapshot and never opens the intelligence popup merely
+    // to enumerate choices. One explicit same-origin GET refresh is requested only when this
+    // document has no captured snapshot (for example after an extension upgrade).
+    window.postMessage({ type: 'cos-model-snapshot-request' }, location.origin);
+    if (!providerModelSnapshot) {
+      await waitPageView(() => Boolean(providerModelSnapshot) ||
+        (!document.querySelector('[data-chatgpt-composer]') && catalogPageReady()), current, 5000);
+    }
+    if (current() && providerModelSnapshot) {
+      const result = await ask({ type: 'model_catalog', nonce: message.nonce, models: null, providerSnapshot: providerModelSnapshot });
+      return result?.ok === true;
+    }
+    // The A/B composer uses the same intelligence trigger for model/reasoning navigation.
+    // Without provider catalog evidence, opening it for enumeration recreates the original
+    // stuck-reasoning failure. Legacy renderers retain their older picker fallback below.
+    if (document.querySelector('[data-chatgpt-composer]')) {
+      if (current()) await ask({ type: 'model_catalog', nonce: message.nonce, models: null, error: 'inspection_failed' });
+      return false;
+    }
     // The owned helper registers before React mounts its composer. Hold this one
     // request on the existing DOM readiness observer instead of waiting for the
     // next 30-second service-worker maintenance pass.
@@ -11199,7 +11326,7 @@
     // before binding the exact Chat composer used by the remaining inspection.
     const switchCurrent = () => current() && !generating && !CLF_DOM.generating() && !desktopInputBusy &&
       !CLF_DOM.hasComposerAttachments() && !CLF_DOM.composer()?.textContent?.trim();
-    if (!await CLF_DOM.prepareChatModelSurface(switchCurrent) || !switchCurrent()) {
+    if (!await CLF_DOM.prepareChatModelSurface(switchCurrent, (node, action) => providerInput(node, action, switchCurrent)) || !switchCurrent()) {
       if (switchCurrent()) await ask({ type: 'model_catalog', nonce: message.nonce, models: null, error: 'picker_unavailable' });
       return false;
     }
@@ -11210,7 +11337,11 @@
       CLF_DOM.composer() === composer && composer.textContent === draftText && CLF_DOM.hasComposerAttachments() === attachments;
     if (!onTarget()) return false;
       let error;
-      const models = await CLF_DOM.inspectModelSettings(() => onTarget() && Date.now() < message.expiresAt, reason => { error ??= reason; }).catch(() => { error ??= 'inspection_failed'; return null; });
+      const models = await CLF_DOM.inspectModelSettings(
+        () => onTarget() && Date.now() < message.expiresAt,
+        reason => { error ??= reason; },
+        (node, action) => providerInput(node, action, () => onTarget() && Date.now() < message.expiresAt)
+      ).catch(() => { error ??= 'inspection_failed'; return null; });
       if (!onTarget()) return false;
       const result = await ask({ type: 'model_catalog', nonce: message.nonce, models, error });
       return result?.ok === true;

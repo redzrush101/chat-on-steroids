@@ -70,10 +70,13 @@
   const MAX_CALLS = 200;
   /** Public generated-image descriptors retained per turn. Pixels never cross this boundary. */
   const MAX_GENERATED_IMAGES = 200;
-  /** ChatGPT's own assistant turn sections, which is where a turn's message model hangs. */
-  const TURN_SECTION = 'section[data-testid^="conversation-turn"]';
+  /** ChatGPT's rendered turn owners. The 2026-09 A/B renderer replaced the
+   * conversation-turn sections with role units nested under data-content-search-turn-key. */
+  const LEGACY_TURN_SECTION = 'section[data-testid^="conversation-turn"]';
+  const SEARCH_UNIT = '[data-content-search-unit-key]';
+  const AB_COMPOSER = 'form[data-chatgpt-composer] [data-composer-markdown][role="textbox"][contenteditable="true"]';
   /** ChatGPT-rendered authored prose. Tool rows and this extension's own surfaces are excluded. */
-  const MARKDOWN = '.markdown';
+  const MARKDOWN = '.markdown, [data-markdown-text-style="assistant-message"]';
   const TOOL = 'span[class*="tool-message"], div.pointer-events-none.contents';
   const GENERATED_IMAGE = '[class~="group/imagegen-image"] img';
   const OWN_SURFACES = '.clf-stream, .clf-stage, .clf-composer, .clf-boot';
@@ -88,6 +91,26 @@
   /** Aggregate authored text/HTML copied through MAIN -> isolated world in one scan. */
   const MAX_RESPONSE_TEXT = MAX_TURNS * 512 * 1024;
   const MAX_TURN_TEXT = 512 * 1024;
+
+  function activeAbEditor() {
+    try {
+      for (const node of document.querySelectorAll(AB_COMPOSER)) {
+        if (node.closest('[hidden],[aria-hidden="true"],[inert]')) continue;
+        let hidden = false;
+        for (let parent = node; parent; parent = parent.parentElement) {
+          const style = getComputedStyle(parent);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {
+            hidden = true;
+            break;
+          }
+        }
+        if (!hidden) return node;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
 
   function budgetedText(value, budget, perValueLimit) {
     if (typeof value !== 'string' || !value || !budget || budget.remaining <= 0) return '';
@@ -1391,7 +1414,10 @@
     const out = [];
     let sections;
     try {
-      sections = document.querySelectorAll(TURN_SECTION);
+      const legacy = document.querySelectorAll(LEGACY_TURN_SECTION);
+      const search = document.querySelectorAll(SEARCH_UNIT);
+      const activeAb = Boolean(activeAbEditor());
+      sections = activeAb && search.length ? search : legacy.length ? legacy : search;
     } catch {
       return out;
     }
@@ -1407,7 +1433,9 @@
     const groups = [];
     for (let at = 0; at < sections.length; at++) {
       const section = sections[at];
-      const id = str(section.getAttribute('data-turn-id'));
+      const id = str(section.getAttribute('data-turn-id')) ||
+        str(section.closest?.('[data-content-search-turn-key]')?.getAttribute('data-content-search-turn-key')) ||
+        str(section.closest?.('[data-turn-key]')?.getAttribute('data-turn-key'));
       const previous = groups[groups.length - 1];
       if (id && previous && previous.turnId === id) previous.sections.push(section);
       else groups.push({ turnId: id, sections: [section] });
@@ -1436,7 +1464,7 @@
     const responseBudget = { remaining: MAX_RESPONSE_TEXT };
     for (const at of [...selected].sort((a, b) => a - b)) {
       const group = groups[at];
-      const section = group.sections[0];
+      const section = group.sections.find(node => /:assistant$/.test(node.getAttribute?.('data-content-search-unit-key') || '')) || group.sections[0];
       let entry = null;
       try {
         const fiber = fiberOf(section);
@@ -1492,6 +1520,16 @@
         if (!conversation.conflict) for (const [node, id] of exactAnchors) {
           desiredMessageStamps.set(node, `${scanToken}:${index}:${encodeURIComponent(id)}`);
         }
+        if (!conversation.conflict) {
+          const users = renderedMessages.filter(message => message.role === 'user' && message.stable === true && message.rawMessageId);
+          if (users.length === 1) {
+            for (const stamped of group.sections) {
+              if (/:user$/.test(stamped.getAttribute?.('data-content-search-unit-key') || '')) {
+                desiredMessageStamps.set(stamped, `${scanToken}:${index}:${encodeURIComponent(users[0].rawMessageId)}`);
+              }
+            }
+          }
+        }
         if (!conversation.conflict) for (const [node, id] of exactThoughtRows) {
           desiredThoughtStamps.set(node, `${scanToken}:${index}:${encodeURIComponent(id)}`);
         }
@@ -1514,7 +1552,8 @@
       const section = sections[at];
       try {
         if (!section || !section.getAttribute) continue;
-        for (const node of section.querySelectorAll('[data-clf-fiber-message], .markdown')) {
+        const messageNodes = [section, ...section.querySelectorAll(`[data-clf-fiber-message], ${MARKDOWN}`)];
+        for (const node of messageNodes) {
           const wantedMessage = desiredMessageStamps.get(node);
           const currentMessage = node.getAttribute('data-clf-fiber-message');
           if (wantedMessage === undefined) {
@@ -1611,8 +1650,11 @@
   function pickerSnapshot() {
     // The closed native trigger retains the same picker owner. Passive recording
     // must not depend on discovery opening its portal first.
-    const form = document.querySelector('#prompt-textarea')?.closest('form');
-    const triggers = [...(form?.querySelectorAll('button[aria-haspopup="menu"]') || [])]
+    const editor = activeAbEditor() || document.querySelector('#prompt-textarea');
+    const form = editor?.closest('form');
+    const explicit = [...(form?.querySelectorAll('button[data-codex-intelligence-trigger="true"][data-composer-navigation-target="reasoning"][aria-haspopup="menu"]') || [])]
+      .filter(node => !node.closest(`${OWN_SURFACES},[hidden],[aria-hidden="true"],[inert]`) && node.getClientRects().length > 0);
+    const triggers = explicit.length ? explicit : [...(form?.querySelectorAll('button[aria-haspopup="menu"]') || [])]
       .filter(node => !node.closest(`${OWN_SURFACES},[hidden],[aria-hidden="true"],[inert]`) && node.getClientRects().length > 0 &&
         node.id !== 'composer-plus-btn' && node.getAttribute('data-testid') !== 'composer-plus-btn');
     const node = document.querySelector('[data-testid="composer-intelligence-picker-content"]') || (triggers.length === 1 ? triggers[0] : null);
@@ -1630,8 +1672,10 @@
   // Its own ancestor carries the current execution model; its visible label
   // carries the selected effort. These are observation, never catalog discovery.
   function closedPickerSelection(node) {
-    const effort = ({ instant: 'none', minimal: 'minimal', low: 'low', medium: 'medium', high: 'high',
-      'extra high': 'xhigh', max: 'max', ultra: 'ultra', pro: 'pro' })[String(node.textContent || '').trim().toLowerCase()];
+    const providerEffort = String(node.getAttribute?.('data-selected-reasoning-effort') || '').trim().toLowerCase();
+    const effortMap = { instant: 'none', none: 'none', minimal: 'minimal', min: 'low', low: 'low', standard: 'medium', medium: 'medium',
+      extended: 'high', high: 'high', 'extra high': 'xhigh', xhigh: 'xhigh', max: 'max', ultra: 'ultra', pro: 'pro' };
+    const effort = effortMap[providerEffort] || effortMap[String(node.textContent || '').trim().toLowerCase()];
     if (!effort) return null;
     let model = null;
     for (let fiber = fiberOf(node), up = 0; fiber && up < MAX_CLIMB; up++, fiber = fiber.return) {

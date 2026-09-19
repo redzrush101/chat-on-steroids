@@ -2055,9 +2055,11 @@ describe('extension command delivery', () => {
     });
     expect(worker.scriptingExecuteScript.mock.calls).toEqual([
       [{ target: { tabId: 41 }, files: ['chatgpt-dom.js'] }],
+      [{ target: { tabId: 41 }, world: 'MAIN', files: ['usage.js'] }],
       [{ target: { tabId: 41 }, world: 'MAIN', files: ['fiber.js'] }],
       [{ target: { tabId: 41 }, files: ['content.js'] }],
       [{ target: { tabId: 42 }, files: ['chatgpt-dom.js'] }],
+      [{ target: { tabId: 42 }, world: 'MAIN', files: ['usage.js'] }],
       [{ target: { tabId: 42 }, world: 'MAIN', files: ['fiber.js'] }],
       [{ target: { tabId: 42 }, files: ['content.js'] }]
     ]);
@@ -2131,7 +2133,7 @@ describe('extension command delivery', () => {
       }
     });
 
-  it('keeps a live recorder but revalidates the idempotent MAIN-world Fiber helper', async () => {
+  it('keeps a live recorder but revalidates the idempotent MAIN-world helpers', async () => {
     const local = new FakeStorageArea(paired);
     const session = new FakeStorageArea();
     const worker = loadWorker({ local, session });
@@ -2142,6 +2144,7 @@ describe('extension command delivery', () => {
 
     expect(worker.tabsSendMessage).toHaveBeenCalledWith(41, { type: 'clf-recorder-ping' }, undefined);
     expect(worker.scriptingExecuteScript.mock.calls).toEqual([
+      [{ target: { tabId: 41 }, world: 'MAIN', files: ['usage.js'] }],
       [{ target: { tabId: 41 }, world: 'MAIN', files: ['fiber.js'] }]
     ]);
     expect(worker.scriptingInsertCSS).not.toHaveBeenCalled();

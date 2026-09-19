@@ -23,7 +23,14 @@
  */
 
 var CLF_DOM = (() => {
-  const TURN = 'section[data-testid^="conversation-turn"]';
+  const LEGACY_TURN = 'section[data-testid^="conversation-turn"]';
+  // 2026-09 A/B renderer: one exchange lives under data-turn-key and exposes
+  // authored user/assistant units directly instead of section[data-testid]. Keep
+  // the logical unit as the turn boundary so callers still see user -> assistant.
+  const SEARCH_UNIT = '[data-content-search-unit-key]';
+  const TURN = `${LEGACY_TURN}, ${SEARCH_UNIT}`;
+  const ASSISTANT_TEXT = '.markdown, [data-markdown-text-style="assistant-message"]';
+  const AB_COMPOSER = 'form[data-chatgpt-composer] [data-composer-markdown][role="textbox"][contenteditable="true"]';
   // ChatGPT has used both shapes in the live renderer: the older tool-message span
   // and, as of 2026-08-15, a display-contents row wrapping the visible tool label.
   // Keep both explicit structural anchors; hashed CSS-module names remain off limits.
@@ -53,8 +60,78 @@ var CLF_DOM = (() => {
     }
   };
 
+  /**
+   * Assistant prose across both renderer families.
+   *
+   * Browsers support the combined selector above directly. Some structural test/fallback
+   * DOM shims only expose exact selector buckets, though, and returning no prose there would
+   * silently change the legacy adapter contract. Prefer the real combined query so mixed
+   * renderer DOM keeps document order; only split the query when that surface reports none.
+   */
+  function assistantTextNodes(node) {
+    return safe(() => {
+      if (!node || typeof node.querySelectorAll !== 'function') return [];
+      const combined = [...node.querySelectorAll(ASSISTANT_TEXT)];
+      if (combined.length > 0) return combined;
+      const out = [];
+      const seen = new Set();
+      for (const selector of ['.markdown', '[data-markdown-text-style="assistant-message"]']) {
+        for (const part of node.querySelectorAll(selector)) {
+          if (seen.has(part)) continue;
+          seen.add(part);
+          out.push(part);
+        }
+      }
+      return out;
+    }, []);
+  }
+
+  function closestAssistantText(node) {
+    return safe(() => node?.closest?.('.markdown') ||
+      node?.closest?.('[data-markdown-text-style="assistant-message"]') || null, null);
+  }
+
   const text = (node, cap = 256_000) =>
     node ? (node.textContent || '').replace(/ /g, ' ').trim().slice(0, cap) : '';
+
+  function searchUnitRole(node) {
+    const key = node?.getAttribute?.('data-content-search-unit-key') || '';
+    return /:user$/.test(key) ? 'user' : /:assistant$/.test(key) ? 'assistant' : null;
+  }
+
+  function searchTurnId(node) {
+    return node?.closest?.('[data-content-search-turn-key]')?.getAttribute('data-content-search-turn-key') ||
+      node?.closest?.('[data-turn-key]')?.getAttribute('data-turn-key') || null;
+  }
+
+  function stampedMessageId(node) {
+    return safe(() => {
+      const marked = node?.matches?.('[data-clf-fiber-message]') ? node : node?.querySelector?.('[data-clf-fiber-message]');
+      const value = marked?.getAttribute('data-clf-fiber-message') || '';
+      const split = value.lastIndexOf(':');
+      if (split <= 0 || split === value.length - 1) return null;
+      const id = decodeURIComponent(value.slice(split + 1));
+      return id && id.length <= 200 ? id : null;
+    }, null);
+  }
+
+  function activeAbComposer() {
+    return safe(() => {
+      for (const node of document.querySelectorAll(AB_COMPOSER)) {
+        if (node.closest('[hidden],[aria-hidden="true"],[inert]')) continue;
+        let hidden = false;
+        for (let parent = node; parent; parent = parent.parentElement) {
+          const style = getComputedStyle(parent);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {
+            hidden = true;
+            break;
+          }
+        }
+        if (!hidden) return node;
+      }
+      return null;
+    }, null);
+  }
 
   // Wire framing matches shared/user-prompt.ts; neither reader changes provider text.
   const promptContinuation = value => /^\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n/.exec(value)?.[0] ?? '';
@@ -69,11 +146,14 @@ var CLF_DOM = (() => {
   }
   function presentUserPrompts(readUserText) {
     return safe(() => {
-      for (const raw of document.querySelectorAll('[data-message-author-role="user"] :is(.whitespace-pre-wrap, .markdown):not([data-clf-user-text])')) {
+      const selector = '[data-message-author-role="user"] :is(.whitespace-pre-wrap, .markdown):not([data-clf-user-text]), ' +
+        '[data-content-search-unit-key$=":user"] [data-user-message-bubble="true"] .whitespace-pre-wrap:not([data-clf-user-text])';
+      for (const raw of document.querySelectorAll(selector)) {
         // Both native renderers can consume Markdown bytes. Parse the same
         // exact-id source used by receipts/recording, never reconstructed HTML.
-        const holder = raw.closest('[data-message-author-role="user"]');
-        const source = readUserText ? readUserText({ role: 'user', id: holder?.getAttribute('data-message-id'),
+        const holder = raw.closest('[data-message-author-role="user"]') || raw.closest('[data-content-search-unit-key$=":user"]');
+        const id = holder?.getAttribute('data-message-id') || stampedMessageId(holder);
+        const source = readUserText ? readUserText({ role: 'user', id,
           node: raw.closest(TURN), text: messageText(holder, 'user') }) : raw.textContent;
         // The native editor can prepend a blank paragraph to the exact provider
         // source. Ignore that outer whitespace only for display; the frame's
@@ -193,7 +273,7 @@ var CLF_DOM = (() => {
         if (parts.length > 0) return parts.join('\n');
       }
       if (role === 'assistant') {
-        const parts = [...node.querySelectorAll('.markdown')]
+        const parts = assistantTextNodes(node)
           .filter((part) => !(part.closest && part.closest('[data-interrupted]')))
           .filter((part) => !(part.closest && part.closest(TOOL)))
           .map((part) => text(part))
@@ -272,7 +352,7 @@ var CLF_DOM = (() => {
         for (const row of clone.querySelectorAll(TOOL)) row.remove();
         authored = text(clone);
       } else {
-        authored = [...node.querySelectorAll('.markdown')]
+        authored = assistantTextNodes(node)
           .filter((part) => !(part.closest && (part.closest(TOOL) || part.closest(OWN_SURFACES))))
           .map((part) => text(part))
           .join('\n');
@@ -387,6 +467,10 @@ var CLF_DOM = (() => {
     'data-turn',
     'data-turn-id',
     'data-testid',
+    'data-content-search-unit-key',
+    'data-content-search-turn-key',
+    'data-turn-key',
+    'data-markdown-text-style',
     'aria-label'
   ];
 
@@ -454,7 +538,7 @@ var CLF_DOM = (() => {
     const memo = memoOf(section);
     if (memo && memo.parts) return memo.parts;
     const parts = [];
-    for (const markdown of section.querySelectorAll('.markdown')) {
+    for (const markdown of assistantTextNodes(section)) {
       if (markdown.closest && markdown.closest('[data-interrupted]')) continue;
       if (markdown.closest && markdown.closest(TOOL)) continue;
       if (markdown.closest && markdown.closest(OWN_SURFACES)) continue;
@@ -469,9 +553,20 @@ var CLF_DOM = (() => {
     return safe(() => {
       const out = [];
       let previous = null;
-      for (const node of document.querySelectorAll(TURN)) {
-        const id = node.getAttribute('data-turn-id');
-        const role = node.getAttribute('data-turn');
+      const legacy = [...document.querySelectorAll(LEGACY_TURN)];
+      const search = [...document.querySelectorAll(SEARCH_UNIT)].filter(node => searchUnitRole(node));
+      // During a renderer handoff both trees can coexist briefly. The live A/B editor
+      // identifies which transcript owns the current page; an old retained section must
+      // never make the new response disappear. With no editor (settings/loading), prefer
+      // whichever transcript family is actually present, preserving the legacy fallback.
+      const nodes = activeAbComposer() && search.length ? search : legacy.length ? legacy : search;
+      for (const node of nodes) {
+        const id = node.getAttribute('data-turn-id') || searchTurnId(node);
+        const role = node.getAttribute('data-turn') || searchUnitRole(node);
+        // The A/B unit key is only meaningful for authored user/assistant units.
+        // Legacy conversation-turn sections historically flowed through unchanged even
+        // when data-turn was temporarily absent during hydration; keep that behavior.
+        if (node.hasAttribute('data-content-search-unit-key') && role !== 'user' && role !== 'assistant') continue;
         if (previous && id && previous.id === id && previous.role === role) {
           previous.nodes.push(node);
           continue;
@@ -568,7 +663,8 @@ var CLF_DOM = (() => {
       // fallback when there is no explicit assistant message and only collect
       // markdown outside progress/tool containers. content.js itself waits until the
       // turn has stopped generating before recording this as the final answer.
-      if (turn.role === 'assistant' && explicit === 0) {
+      if (turn.role === 'assistant' && explicit === 0 &&
+          !nodes.some(node => node.hasAttribute?.('data-content-search-unit-key'))) {
         const parts = [];
         for (const section of nodes) {
           for (const value of sectionParts(section)) {
@@ -594,6 +690,25 @@ var CLF_DOM = (() => {
               interrupted: interrupted(turn)
             });
           }
+        }
+      }
+      // 2026-09 A/B units expose neither data-message-id nor data-message-author-role.
+      // The role-unit key is stable presentation identity, not a provider message UUID. It is
+      // nevertheless sufficient for the exact native Send receipt because that receipt also
+      // requires a fresh DOM node, the submitted text and the current conversation. Prefer a
+      // MAIN-world provider stamp when one exists; otherwise keep the presentation identity
+      // instead of making a successful Send wait forever for a React shape this renderer no
+      // longer promises to expose.
+      if (explicit === 0 && nodes.some(node => node.hasAttribute?.('data-content-search-unit-key'))) {
+        for (const unit of nodes) {
+          const role = searchUnitRole(unit);
+          if (!role) continue;
+          const providerId = stampedMessageId(unit);
+          const id = providerId || unit.getAttribute('data-content-search-unit-key');
+          const value = messageText(unit, role);
+          if (!id || !value || seen.has(id) || (role === 'assistant' && transportFailure(value))) continue;
+          seen.add(id);
+          out.push({ id, role, text: value, turnId: turn.id, node: unit, interrupted: interrupted(turn), presentation: !providerId });
         }
       }
       return out;
@@ -1040,7 +1155,7 @@ var CLF_DOM = (() => {
     // is what keeps an expanded connector result out of the chronology as prose.
     if (node.querySelector && node.querySelector(CONNECTOR)) return true;
     if (node.closest && node.closest(CONNECTOR)) return true;
-    if (node.querySelector && node.querySelector('.markdown')) return false;
+    if (assistantTextNodes(node).length > 0) return false;
     const label = (node.textContent || '').replace(/\s+/g, ' ').trim();
     return label.length > 0 && label.length <= 200;
   }
@@ -1367,7 +1482,7 @@ var CLF_DOM = (() => {
           // expandable button outside authored markdown, not an alert/Retry card.
           // Keep every occurrence's node identity; old failed turns remain rendered.
           for (const button of section.querySelectorAll('button[aria-expanded]')) {
-            if (button.closest(`${OWN_SURFACES}, .markdown, [data-message-author-role="user"], [hidden], [inert], [aria-hidden="true"]`) ||
+            if (button.closest(`${OWN_SURFACES}, .markdown, [data-markdown-text-style="assistant-message"], [data-message-author-role="user"], [hidden], [inert], [aria-hidden="true"]`) ||
                 button.closest(TURN) !== section || !displayed(button) ||
                 (button.textContent || '').trim() !== 'Thinking failed') continue;
             let hidden = false;
@@ -1379,7 +1494,7 @@ var CLF_DOM = (() => {
             out.push({ text: 'Thinking failed', node: button, turnId: turn.id, turn,
               reason: 'thinking_failed', recoverable: false });
           }
-          for (const markdown of section.querySelectorAll('.markdown')) {
+          for (const markdown of assistantTextNodes(section)) {
             const value = text(markdown, 500).replace(/\s+/g, ' ').trim();
             if (!value || !transportFailure(value) || texts.has(value)) continue;
             texts.add(value);
@@ -1392,7 +1507,7 @@ var CLF_DOM = (() => {
   }
 
   function composer() {
-    return safe(() => document.querySelector('#prompt-textarea'), null);
+    return safe(() => activeAbComposer() || document.querySelector('#prompt-textarea'), null);
   }
 
   /**
@@ -1518,9 +1633,23 @@ var CLF_DOM = (() => {
             if (role === 'assistant') return null;
             if (role === 'user') return node;
           }
+          if (turn.role === 'user' && section.hasAttribute?.('data-content-search-unit-key')) {
+            return section.querySelector('[data-user-message-bubble="true"]') || section;
+          }
         }
       }
       return null;
+    }, null);
+  }
+
+  /** Stable provider message id for a rendered native message node in either renderer. */
+  function messageIdForNode(node) {
+    return safe(() => {
+      if (!node) return null;
+      const legacy = node.closest?.('[data-message-id]');
+      if (legacy) return legacy.getAttribute('data-message-id') || null;
+      const unit = node.closest?.(SEARCH_UNIT);
+      return unit ? stampedMessageId(unit) : null;
     }, null);
   }
 
@@ -1556,7 +1685,7 @@ var CLF_DOM = (() => {
         if (!image.closest('button, [role="button"]') || image.closest('[class~="group/imagegen-image"]')) return false;
       }
       if (node.querySelector?.('a[download], button[aria-label="Edit image"], button[aria-label="Share this image"]')) return false;
-      if ([...node.querySelectorAll('.markdown')].some(part =>
+      if (assistantTextNodes(node).some(part =>
         !part.closest(OWN_SURFACES) && text(part).length > 0)) return false;
       // The live renderer does not wrap every public/interim line in `.markdown`.
       // Text belonging to the tool leaf is replaceable; any other text (including
@@ -1692,7 +1821,7 @@ var CLF_DOM = (() => {
       const candidates = [];
       for (const section of turnNodes(turn)) {
         for (const button of section.querySelectorAll('button[aria-expanded="false"], button[aria-expanded="true"]')) {
-          if (button.closest(`${OWN_SURFACES}, .markdown, ${CONNECTOR}`)) continue;
+          if (button.closest(`${OWN_SURFACES}, .markdown, [data-markdown-text-style="assistant-message"], ${CONNECTOR}`)) continue;
           const clip = button.nextElementSibling;
           if (!clip || !clip.matches('div[data-item-anchor="start"][data-clip="true"][data-dimension="height"]')) continue;
           candidates.push({ button, clip, section });
@@ -1739,7 +1868,7 @@ var CLF_DOM = (() => {
         // Only the native list directly grouping these proven message wrappers loses its
         // large inter-item gap. Paragraphs, code blocks and the final answer keep their CSS.
         const stack = step?.parentElement;
-        if (stack && stack !== section && stack !== fold?.clip && !stack.closest('.markdown')) {
+        if (stack && stack !== section && stack !== fold?.clip && !closestAssistantText(stack)) {
           const style = getComputedStyle(stack);
           if (style.display === 'flex' && style.flexDirection === 'column') desired.set(stack, 'stack');
         }
@@ -1960,10 +2089,10 @@ var CLF_DOM = (() => {
                 !sendButtonEnabled(button) || box.getAttribute('aria-disabled') === 'true' ||
                 box.getAttribute('contenteditable') === 'false') return finish(false);
             attempted = true;
-            // The deadline bounds readiness, not an already-dispatched receipt.
-            // Keep this same observer and exact send lifetime until the provider
-            // publishes its identity; never click again because that is delayed.
-            if (acceptUserReceipt && timer !== null) { clearTimeout(timer); timer = null; }
+            // The same deadline also bounds a dispatched receipt. A renderer compatibility
+            // break must not leave the desktop input lease open forever after the one native
+            // click. We still never click twice; a late provider identity is simply not a
+            // receipt for this expired command.
             try { button.click(); } catch { return finish(false); }
             check(); // Synchronous navigation/cancellation during click also re-proves ownership.
           };
@@ -1985,7 +2114,7 @@ var CLF_DOM = (() => {
         if (observeEvidence) unsubscribeEvidence = observeEvidence(check);
         // Readiness and acceptance share one deadline below the app's command lease.
         const timeout = Number.isFinite(acceptanceTimeoutMs) ? Math.max(1, Math.min(30000, acceptanceTimeoutMs)) : 30000;
-        timer = setTimeout(() => { if (attempted) check(); if (!attempted || !acceptUserReceipt) finish(false); }, timeout);
+        timer = setTimeout(() => { if (attempted) check(); if (!done) finish(false); }, timeout);
         check();
       });
     } catch {
@@ -2136,6 +2265,11 @@ var CLF_DOM = (() => {
   }
   /** UI only transports a requested selection. Provider state proves identity and availability. */
   function modelPickerTrigger() {
+    const abForm = activeAbComposer()?.closest('form');
+    const explicit = [...(abForm?.querySelectorAll('button[data-codex-intelligence-trigger="true"][data-composer-navigation-target="reasoning"][aria-haspopup="menu"]') || [])]
+      .filter(node => !node.closest(`${OWN_SURFACES},[hidden],[aria-hidden="true"],[inert]`) && node.getClientRects().length > 0);
+    if (explicit.length === 1) return explicit[0];
+    if (explicit.length > 1) return null;
     const candidates = [...(composer()?.closest('form')?.querySelectorAll('button[aria-haspopup="menu"]') || [])]
       .filter(node => !node.closest(`${OWN_SURFACES},[hidden],[aria-hidden="true"],[inert]`) && node.getClientRects().length > 0 &&
         node.id !== 'composer-plus-btn' && node.getAttribute('data-testid') !== 'composer-plus-btn');
@@ -2153,9 +2287,58 @@ var CLF_DOM = (() => {
     }
     return false;
   }
-  function modelPickerAccess(stillCurrent) {
+  function modelPickerAccess(stillCurrent, trustedInput = null) {
     const shown = node => node && !node.closest('[hidden],[aria-hidden="true"],[inert]') && node.getClientRects().length > 0;
-    const picker = () => document.querySelector('[data-testid="composer-intelligence-picker-content"]');
+    const legacyPickerShape = node => !!node?.querySelector?.('[role="menuitem"][aria-keyshortcuts*="ArrowRight"], [role="menuitemradio"]');
+    const abPickerShape = node => Boolean(activeAbComposer() && node?.querySelector?.(
+      '[role="slider"], [class*="SliderKeyboardControl-"], [class*="ModelList-"], [class*="ViewControls-"]'
+    ));
+    const pickerShape = node => legacyPickerShape(node) || abPickerShape(node);
+    const picker = () => {
+      const legacy = document.querySelector('[data-testid="composer-intelligence-picker-content"]');
+      if (legacy) return legacy;
+      const button = modelPickerTrigger();
+      if (!button || button.getAttribute('aria-expanded') !== 'true') return null;
+      let controlledPanel = null;
+      const controlled = button.getAttribute('aria-controls');
+      if (controlled) {
+        const panel = document.getElementById(controlled);
+        if (shown(panel) && (panel.matches?.('[role="menu"],[role="dialog"]') || abPickerShape(panel))) controlledPanel = panel;
+        const owned = panel?.querySelector?.('[role="menu"],[role="dialog"]');
+        if (!controlledPanel && shown(owned)) controlledPanel = owned;
+      }
+      const openSelector = activeAbComposer()
+        ? '[role="menu"][data-state="open"], [role="dialog"][data-state="open"], [class*="ModelPickerDropdownContent-"][data-state="open"]'
+        : '[role="menu"][data-state="open"], [role="dialog"][data-state="open"]';
+      const open = [...document.querySelectorAll(openSelector)]
+        .filter(node => shown(node) && pickerShape(node) && !node.closest(OWN_SURFACES));
+      // Radix may portal the model/version list as a second menu while leaving the
+      // effort-slider menu mounted. Prefer the leaf popup containing radio rows; after
+      // selection that submenu disappears and the slider popup becomes authoritative again.
+      // An aria-controls relationship on the outer trigger proves the parent picker, but
+      // must not pin reads to that parent while its own expanded item owns a portaled submenu.
+      const leaves = open.filter(node => !open.some(other => other !== node && node.contains(other)));
+      const versions = leaves.filter(node => node.querySelector('[role="menuitemradio"], [class*="ModelList-"]'));
+      const expandedChild = controlledPanel && [...controlledPanel.querySelectorAll(
+        '[role="menuitem"][aria-expanded="true"], [class*="ViewToggle-"][aria-expanded="true"]'
+      )]
+        .filter(node => shown(node));
+      if (expandedChild?.length === 1) {
+        const submenuId = expandedChild[0].getAttribute('aria-controls');
+        const submenu = submenuId ? document.getElementById(submenuId) : null;
+        if (shown(submenu) && (submenu.matches?.('[role="menu"],[role="dialog"]') || abPickerShape(submenu)) &&
+            submenu.querySelector('[role="menuitemradio"], [class*="ModelList-"]')) return submenu;
+      }
+      if (!controlledPanel && versions.length === 1) return versions[0];
+      const active = document.activeElement?.closest?.('[role="menu"],[role="dialog"]');
+      if (active && leaves.includes(active) && pickerShape(active) && (!controlledPanel || active === controlledPanel || controlledPanel.contains(active))) return active;
+      if (controlledPanel && pickerShape(controlledPanel)) return controlledPanel;
+      const sliders = leaves.filter(node => node.querySelector(
+        '[role="menuitem"][aria-keyshortcuts*="ArrowRight"], [role="slider"], [class*="SliderKeyboardControl-"]'
+      ));
+      if (sliders.length === 1) return sliders[0];
+      return leaves.length === 1 ? leaves[0] : null;
+    };
     const trigger = modelPickerTrigger;
     let motion = null;
     const openPicker = () => {
@@ -2179,7 +2362,21 @@ var CLF_DOM = (() => {
       const timer = setTimeout(() => finish(null), timeout); void check();
     });
     const state = predicate => wait(async () => { const value = await readPickerState(); return value && (!predicate || predicate(value)) ? value : null; });
-    const key = (node, value) => { if (!node || !stillCurrent()) return false; node.focus(); node.dispatchEvent(new KeyboardEvent('keydown', { key: value, code: value, bubbles: true, cancelable: true })); return true; };
+    const useTrustedInput = () => Boolean(activeAbComposer() && typeof trustedInput === 'function');
+    const input = async (node, action) => {
+      if (!node || !stillCurrent()) return false;
+      if (useTrustedInput()) {
+        if (action.kind === 'key') try { node.focus(); } catch { return false; }
+        try { return (await trustedInput(node, action)) === true && stillCurrent(); }
+        catch { return false; }
+      }
+      if (action.kind === 'click') {
+        try { node.click(); return stillCurrent(); } catch { return false; }
+      }
+      node.focus();
+      node.dispatchEvent(new KeyboardEvent('keydown', { key: action.key, code: action.key, bubbles: true, cancelable: true }));
+      return stillCurrent();
+    };
     return {
       state,
       async open() {
@@ -2189,48 +2386,60 @@ var CLF_DOM = (() => {
         // focus scope indefinitely. Suppress only this owned picker animation for
         // this operation; native state still closes/unmounts it and proves release.
         motion = document.createElement('style');
-        motion.textContent = '[role="menu"]:has(> [data-testid="composer-intelligence-picker-content"]),[role="dialog"]:has([data-testid="composer-intelligence-picker-content"]){animation:none!important}';
+        motion.textContent = '[role="menu"]:has(> [data-testid="composer-intelligence-picker-content"]),[role="dialog"]:has([data-testid="composer-intelligence-picker-content"]),[role="menu"]:has([role="menuitem"][aria-keyshortcuts*="ArrowRight"]),[role="dialog"]:has([role="menuitem"][aria-keyshortcuts*="ArrowRight"]),[role="menu"]:has([role="menuitemradio"]),[role="dialog"]:has([role="menuitemradio"]),[class*="ModelPickerDropdownContent-"]{animation:none!important}';
         document.head.append(motion);
         // A cold home editor mounts before its native Chat/Work picker. Workers
         // enter here directly, without the New Chat reuse/catalog preparation.
         // Wait for that surface, then use the same owned Chat transition before
         // interpreting account choices. Work's picker is not a denied Chat model.
-        if (!await wait(trigger, 15000) || !await prepareChatModelSurface(stillCurrent)) return null;
+        if (!await wait(trigger, 15000) || !await prepareChatModelSurface(stillCurrent, trustedInput)) return null;
         // A retained exit-animation node is not an open native menu.
-        if (!openPicker()) { const button = await wait(trigger, 15000); if (!key(button, 'Enter') || !await wait(openPicker)) return null; }
+        if (!openPicker()) {
+          const button = await wait(trigger, 15000);
+          const activation = useTrustedInput() ? { kind: 'click' } : { kind: 'key', key: 'Enter' };
+          if (!await input(button, activation) || !await wait(openPicker)) return null;
+        }
         return state();
       },
       async close() {
         try {
         if (!stillCurrent()) return false;
         const panel = picker();
-        if (!panel) return true;
+        const button = trigger();
+        if (!panel) {
+          if (!button || (button.getAttribute('aria-expanded') !== 'true' && button.getAttribute('data-state') !== 'open')) return true;
+          const target = document.activeElement && document.activeElement !== document.body ? document.activeElement : button;
+          if (!await input(target, { kind: 'key', key: 'Escape' })) return false;
+          return Boolean(await wait(() => button.getAttribute('aria-expanded') !== 'true' && button.getAttribute('data-state') !== 'open'));
+        }
         const dialog = panel.closest('[role="dialog"]'), active = document.activeElement;
         if (!shown(panel) && !shown(dialog)) return true;
         // Escape belongs inside the picker focus trap, not to its outside trigger.
         // A dispatched key is only an attempt: native unmount/animation owns closure.
-        if (!key(panel.contains(active) || dialog?.contains(active) ? active : panel, 'Escape')) return false;
+        if (!await input(panel.contains(active) || dialog?.contains(active) ? active : panel, { kind: 'key', key: 'Escape' })) return false;
         return Boolean(await wait(() => !shown(picker()) && (!dialog?.isConnected || !shown(dialog))));
         } finally { motion?.remove(); motion = null; }
       },
       async version(version) {
         const before = await state(); if (!before) return null;
-        const versionRows = () => [...(picker()?.querySelectorAll('[role="menuitemradio"]') || [])].filter(shown);
+        const versionRows = () => [...(picker()?.querySelectorAll(
+          '[role="menuitemradio"], [class*="ModelList-"] button, [class*="ModelList-"] [role="menuitem"]'
+        ) || [])].filter(shown);
         if (before.version === version && !versionRows().length) return before;
         const label = before.versions.find(v => v.id === version)?.label;
         if (!label) return null;
         // The picker may already show the version list (including a checked row).
         // Select that row to return to its effort view; never assume the slider is open.
         if (!versionRows().length) {
-          const toggle = [...picker().querySelectorAll('[role="menuitem"][aria-expanded]')].filter(shown);
+          const toggle = [...picker().querySelectorAll('[role="menuitem"][aria-expanded], button[class*="ViewToggle-"], [class*="ViewToggle-"][role="button"]')].filter(shown);
           if (toggle.length !== 1) return null;
-          toggle[0].click();
+          if (!await input(toggle[0], { kind: 'click' })) return null;
         }
         const option = await wait(() => {
           const rows = versionRows().filter(node => pickerVersionNamed(node, label) && node.getAttribute('aria-disabled') !== 'true');
           return rows.length === 1 ? rows[0] : null;
         });
-        if (!key(option, 'Enter')) return null;
+        if (!await input(option, { kind: 'key', key: 'Enter' })) return null;
         return state(next => next.version === version && !versionRows().length);
       },
       async bucket(bucket) {
@@ -2240,8 +2449,9 @@ var CLF_DOM = (() => {
           const from = current.choices.findIndex(c => c.bucket === current.currentBucket), to = current.choices.findIndex(c => c.bucket === bucket);
           if (from < 0 || to < 0) return null;
           const expected = current.choices[from + (to > from ? 1 : -1)].bucket;
-          const controls = [...picker().querySelectorAll('[role="menuitem"][aria-keyshortcuts]')].filter(node => shown(node) && node.getAttribute('aria-keyshortcuts').includes('ArrowRight'));
-          if (controls.length !== 1 || !key(controls[0], to > from ? 'ArrowRight' : 'ArrowLeft')) return null;
+          const controls = [...picker().querySelectorAll('[role="menuitem"][aria-keyshortcuts], [role="slider"], [class*="SliderKeyboardControl-"]')]
+            .filter(node => shown(node) && (!node.hasAttribute('aria-keyshortcuts') || node.getAttribute('aria-keyshortcuts').includes('ArrowRight')));
+          if (controls.length !== 1 || !await input(controls[0], { kind: 'key', key: to > from ? 'ArrowRight' : 'ArrowLeft' })) return null;
           const version = current.version;
           current = await state(next => next.version === version && next.currentBucket === expected);
         }
@@ -2260,7 +2470,7 @@ var CLF_DOM = (() => {
   }
   /** Account model discovery belongs to Chat; Work mounts a different picker.
    * The caller owns one idle document and verifies draft/epoch before and after this transition. */
-  async function prepareChatModelSurface(stillCurrent = () => true) {
+  async function prepareChatModelSurface(stillCurrent = () => true, trustedInput = null) {
     const radios = () => [...document.querySelectorAll('[role="radio"][data-tpp-toggle-value]')]
       .filter(node => !node.closest(OWN_SURFACES) && node.getClientRects().length > 0);
     const state = () => {
@@ -2285,7 +2495,17 @@ var CLF_DOM = (() => {
       const observer = new MutationObserver(check);
       observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
       const timer = setTimeout(() => finish(false), 5000);
-      before.chat.click(); check();
+      const click = async () => {
+        if (activeAbComposer() && typeof trustedInput === 'function') {
+          let ok = false;
+          try { ok = (await trustedInput(before.chat, { kind: 'click' })) === true; } catch { ok = false; }
+          if (!ok) return finish(false);
+        } else {
+          try { before.chat.click(); } catch { return finish(false); }
+        }
+        check();
+      };
+      void click();
     });
   }
   function collectModelChoices(result, state) {
@@ -2296,10 +2516,22 @@ var CLF_DOM = (() => {
       result.set(choice.familyId, entry);
     }
   }
-  async function inspectModelSettings(stillCurrent = () => true, failure = () => {}) {
-    const ui = modelPickerAccess(stillCurrent), original = await ui.open();
-    if (!original) { await ui.close(); failure('picker_unavailable'); return null; }
+  async function inspectModelSettings(stillCurrent = () => true, failure = () => {}, trustedInput = null) {
     const result = new Map();
+    // The Codex renderer keeps the account-evaluated choice table in the closed composer.
+    // Reading that state first makes discovery non-invasive and, critically, usable even if
+    // the provider changes the picker's portal/accessibility markup again. Opening the native
+    // picker is only needed to enumerate additional model versions.
+    const closedState = activeAbComposer() ? await readPickerState() : null;
+    if (closedState) collectModelChoices(result, closedState);
+    if (closedState && closedState.versions.length === 1) return [...result.values()];
+    const ui = modelPickerAccess(stillCurrent, trustedInput), original = await ui.open();
+    if (!original) {
+      await ui.close();
+      if (result.size && stillCurrent()) return [...result.values()];
+      failure('picker_unavailable');
+      return null;
+    }
     let restored = false, closed = false;
     try {
       // One observation per version, not one mutation per effort. Computed choices
@@ -2309,7 +2541,7 @@ var CLF_DOM = (() => {
         if (!state) throw new Error('model_unconfirmed');
         collectModelChoices(result, state);
       }
-    } catch { failure('model_unconfirmed'); result.clear(); }
+    } catch { failure('model_unconfirmed'); }
     finally {
       if (stillCurrent() && await ui.version(original.version)) {
         const state = await ui.bucket(original.currentBucket);
@@ -2321,17 +2553,25 @@ var CLF_DOM = (() => {
     }
     if (!restored) failure('restore_failed');
     if (!closed) failure('picker_close_failed');
-    return restored && closed && stillCurrent() && result.size ? [...result.values()] : null;
+    // A closed-state observation is still valid account evidence if a secondary version could
+    // not be enumerated. Never throw away the current usable model merely because a menu view
+    // changed; restoration/closure remain mandatory after any mutation attempt.
+    return closed && stillCurrent() && result.size ? [...result.values()] : null;
   }
-  async function selectModelSettings(model, effort, stillCurrent = () => true) {
+  async function selectModelSettings(model, effort, stillCurrent = () => true, trustedInput = null) {
     if (!model && !effort) return true;
-    const ui = modelPickerAccess(stillCurrent), original = await ui.open();
+    const matches = c => c.available && (!effort || c.effort === effort) && (!model || c.familyId === model || c.id === model || normalizeModelLabel(c.familyLabel) === normalizeModelLabel(model) || normalizeModelLabel(c.label) === normalizeModelLabel(model));
+    const closedState = activeAbComposer() ? await readPickerState() : null;
+    const closedChoice = closedState?.choices.find(c => c.bucket === closedState.currentBucket);
+    // Most desktop sends reuse the already selected account model. Do not open a popup at all
+    // when provider state has already proven the requested pair.
+    if (closedChoice && matches(closedChoice)) return true;
+    const ui = modelPickerAccess(stillCurrent, trustedInput), original = await ui.open();
     if (!original) { await ui.close(); return false; }
     let selected = false, closed = false;
     try {
       // Exact provider slug is preferred. Existing saved display slugs may resolve
       // only to an actually observed, available pair; never to an account default.
-      const matches = c => c.available && (!effort || c.effort === effort) && (!model || c.familyId === model || c.id === model || normalizeModelLabel(c.familyLabel) === normalizeModelLabel(model) || normalizeModelLabel(c.label) === normalizeModelLabel(model));
       for (const version of [original.versions.find(v => v.id === original.version), ...original.versions.filter(v => v.id !== original.version)]) {
         const state = await ui.version(version.id); if (!state) return false;
         const choices = state.choices.filter(matches);
@@ -2449,7 +2689,7 @@ var CLF_DOM = (() => {
     pluginManagementIdle,
     selectModelSettings,
     temporaryChatReady: () => safe(() => [...document.querySelectorAll('button')].some(button => {
-      if (button.closest(`${OWN_SURFACES}, [data-message-author-role], [data-testid^="conversation-turn-"]`) || !button.getClientRects().length) return false;
+      if (button.closest(`${OWN_SURFACES}, ${TURN}, [data-message-author-role]`) || !button.getClientRects().length) return false;
       // The provider renders both icons at once. Only the visible checked glyph proves
       // the mode; translated labels and the requested URL are not activation receipts.
       return [...button.querySelectorAll('svg use')].some(use => {
@@ -2471,6 +2711,15 @@ var CLF_DOM = (() => {
     conversationId,
     conversationFromPath,
     conversationTitle,
+    messageIdForNode,
+    turnNode: node => safe(() => node?.closest?.(TURN) || null, null),
+    containsTurn: node => safe(() => !!node && node.nodeType === 1 && (node.matches?.(TURN) || !!node.querySelector?.(TURN)), false),
+    containsAuthoredOutput: node => safe(() => {
+      if (!node) return false;
+      const selector = `[data-message-author-role="assistant"], ${ASSISTANT_TEXT}`;
+      const element = node.nodeType === 1 ? node : node.parentElement;
+      return !!element && (element.matches?.(selector) || element.closest?.(selector) || !!element.querySelector?.(selector));
+    }, false),
     turns,
     presentationTurns,
     messages,

@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const source = readFileSync(new URL('../extension/chatgpt-dom.js', import.meta.url), 'utf8');
 interface DomApi {
+  composer(): HTMLElement | null;
+  firstUserMessage(): HTMLElement | null;
+  messageIdForNode(node: Element | null): string | null;
   insertPrompt(text: string, mode?: boolean | 'append', failure?: (reason: string) => void): boolean;
   enterProject(entry: { id: string; sourceConversationId: string }, current?: () => boolean): Promise<boolean>;
   composerActions(): { host: HTMLElement; before: HTMLElement | null } | null;
@@ -16,9 +19,16 @@ interface DomApi {
   hasComposerAttachments(): boolean;
   stopGeneration(current: () => boolean): boolean;
   inspectModelSettings(current?: () => boolean, failure?: (reason: string) => void): Promise<Array<{id: string; label: string; efforts: string[]}> | null>;
-  send(options?: { acceptanceTimeoutMs?: number; stillCurrent?: () => boolean; beforeSend?: () => Promise<boolean> }): Promise<boolean>;
+  send(options?: {
+    acceptanceTimeoutMs?: number;
+    stillCurrent?: () => boolean;
+    beforeSend?: () => Promise<boolean>;
+    acceptUserReceipt?: (message: { id: string; role: string; text: string; node: HTMLElement }, conversationId: string | null) => boolean;
+  }): Promise<boolean>;
   selectModelSettings(model: string | null, effort: string | null, current?: () => boolean): Promise<boolean>;
   uploadImages(images: Array<{ name: string; dataUrl: string }>, current?: () => boolean, draft?: ReturnType<DomApi['captureComposerDraft']>, files?: File[]): Promise<boolean>;
+  turns(): Array<{ id: string | null; role: 'user' | 'assistant'; node: HTMLElement; nodes: HTMLElement[] }>;
+  messages(): Array<{ id: string; role: 'user' | 'assistant'; text: string; turnId: string | null; node: HTMLElement }>;
 }
 let dom: JSDOM;
 let document: Document;
@@ -46,6 +56,41 @@ function user(text: string) {
   message.setAttribute('data-message-author-role', 'user');
   message.textContent = text;
   section.append(message); document.body.append(section);
+}
+
+function installAbComposer(text = 'Exact app prompt') {
+  document.body.innerHTML = `<form data-chatgpt-composer="" data-composer-placement="thread">
+    <div data-composer-markdown="" role="textbox" contenteditable="true" aria-label="Ask ChatGPT"></div>
+    <button type="button" aria-label="Select ChatGPT model" aria-haspopup="menu" aria-expanded="false"
+      data-codex-intelligence-trigger="true" data-composer-navigation-target="reasoning"
+      data-selected-reasoning-effort="high">High</button>
+    <button type="button" data-testid="send-button" aria-label="Send message">Send</button>
+  </form>`;
+  box = document.querySelector('[data-composer-markdown]')!;
+  box.textContent = text;
+  button = document.querySelector('[data-testid="send-button"]')!;
+}
+
+function abTurn(userText: string, assistantText: string, stamp = true) {
+  const turnKey = 'c784b334-ccab-48a3-9e53-eff311457170';
+  const root = document.createElement('div');
+  root.setAttribute('data-turn-key', turnKey);
+  root.setAttribute('data-content-search-turn-key', turnKey);
+  const userUnit = document.createElement('div');
+  userUnit.setAttribute('data-content-search-unit-key', `${turnKey}:0:user`);
+  if (stamp) userUnit.setAttribute('data-clf-fiber-message', 'scan-token:0:user-provider-id');
+  userUnit.innerHTML = `<div data-user-message-bubble="true"><div class="whitespace-pre-wrap"></div></div>`;
+  userUnit.querySelector('.whitespace-pre-wrap')!.textContent = userText;
+  const assistantUnit = document.createElement('div');
+  assistantUnit.setAttribute('data-content-search-unit-key', `${turnKey}:2:assistant`);
+  const prose = document.createElement('div');
+  prose.setAttribute('data-markdown-text-style', 'assistant-message');
+  if (stamp) prose.setAttribute('data-clf-fiber-message', 'scan-token:0:assistant-provider-id');
+  prose.textContent = assistantText;
+  assistantUnit.append(prose);
+  root.append(userUnit, assistantUnit);
+  document.body.append(root);
+  return { root, userUnit, assistantUnit, prose };
 }
 
 describe('one native HTML edit for prepared text', () => {
@@ -343,6 +388,124 @@ describe('one native Send and bounded acceptance observation', () => {
     const result = api.send({ acceptanceTimeoutMs: 100 });
     await vi.advanceTimersByTimeAsync(100);
     expect(await result).toBe(false);
+  });
+
+  it('accepts a fresh exact A/B user unit as presentation receipt without waiting for Fiber identity', async () => {
+    installAbComposer();
+    button.addEventListener('click', () => {
+      dom.reconfigure({ url: 'https://chatgpt.com/c/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' });
+      abTurn('Exact app prompt', '', false);
+    });
+    const accepted = vi.fn((message: { id: string; presentation?: boolean }) =>
+      message.presentation === true && message.id === 'c784b334-ccab-48a3-9e53-eff311457170:0:user');
+    const result = api.send({ acceptanceTimeoutMs: 100, acceptUserReceipt: accepted });
+    expect(await result).toBe(true);
+    expect(accepted).toHaveBeenCalledOnce();
+  });
+
+  it('keeps one A/B Send attempt bounded while a caller waits for a later canonical Fiber stamp', async () => {
+    installAbComposer();
+    let clicks = 0;
+    button.addEventListener('click', () => {
+      clicks++;
+      dom.reconfigure({ url: 'https://chatgpt.com/c/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' });
+      const { userUnit } = abTurn('Exact app prompt', '', false);
+      dom.window.setTimeout(() => userUnit.setAttribute('data-clf-fiber-message', 'scan-token:0:user-provider-id'), 20);
+    });
+    const accepted = vi.fn((message: { id: string }) => message.id === 'user-provider-id');
+    const result = api.send({ acceptanceTimeoutMs: 100, acceptUserReceipt: accepted });
+    await vi.advanceTimersByTimeAsync(19);
+    expect(accepted).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'c784b334-ccab-48a3-9e53-eff311457170:0:user', presentation: true
+    }), 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toBe(true);
+    expect(clicks).toBe(1);
+  });
+});
+
+describe('2026-09 A/B renderer compatibility', () => {
+  it('preserves a legacy conversation turn while its data-turn role is temporarily absent', () => {
+    const section = document.createElement('section');
+    section.setAttribute('data-testid', 'conversation-turn-hydrating');
+    section.setAttribute('data-turn-id', 'legacy-hydrating');
+    const message = document.createElement('div');
+    message.setAttribute('data-message-id', 'legacy-provider-id');
+    message.setAttribute('data-message-author-role', 'assistant');
+    message.textContent = 'Legacy answer during hydration';
+    section.append(message); document.body.append(section);
+    expect(api.turns()).toHaveLength(1);
+    expect(api.messages()).toEqual([
+      expect.objectContaining({ id: 'legacy-provider-id', role: 'assistant', text: 'Legacy answer during hydration' })
+    ]);
+  });
+
+  it('discovers the ProseMirror composer while preserving the legacy composer path', () => {
+    expect(api.composer()).toBe(document.getElementById('prompt-textarea'));
+    installAbComposer('A/B draft');
+    expect(api.composer()).toBe(box);
+    expect(api.composer()!.getAttribute('data-composer-markdown')).toBe('');
+  });
+
+  it('reads role units and assistant prose from the captured A/B transcript shape', () => {
+    installAbComposer('');
+    // React can retain the old renderer during a handoff; it must not hide the live A/B tree.
+    user('Stale legacy row');
+    const { userUnit, assistantUnit } = abTurn('Question from user', 'Answer from ChatGPT');
+    const turns = api.turns();
+    expect(turns).toHaveLength(2);
+    expect(turns.map(turn => turn.role)).toEqual(['user', 'assistant']);
+    expect(turns[0]!.id).toBe(turns[1]!.id);
+    expect(turns[0]!.node).toBe(userUnit);
+    expect(turns[1]!.node).toBe(assistantUnit);
+    expect(api.messages()).toEqual([
+      expect.objectContaining({ id: 'user-provider-id', role: 'user', text: 'Question from user' }),
+      expect.objectContaining({ id: 'assistant-provider-id', role: 'assistant', text: 'Answer from ChatGPT' })
+    ]);
+    expect(api.messageIdForNode(api.firstUserMessage())).toBe('user-provider-id');
+  });
+
+  it('keeps multiple assistant units in one A/B exchange instead of dropping the response', () => {
+    installAbComposer('');
+    const { root, assistantUnit } = abTurn('Question', 'Interim answer');
+    const second = document.createElement('div');
+    second.setAttribute('data-content-search-unit-key', 'c784b334-ccab-48a3-9e53-eff311457170:3:assistant');
+    const prose = document.createElement('div');
+    prose.setAttribute('data-markdown-text-style', 'assistant-message');
+    prose.setAttribute('data-clf-fiber-message', 'scan-token:0:assistant-provider-final');
+    prose.textContent = 'Final answer'; second.append(prose); root.append(second);
+    const turns = api.turns();
+    expect(turns).toHaveLength(2);
+    expect(turns[1]!.role).toBe('assistant');
+    expect(turns[1]!.nodes).toEqual([assistantUnit, second]);
+    expect(api.messages().filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({ id: 'assistant-provider-id', text: 'Interim answer' }),
+      expect.objectContaining({ id: 'assistant-provider-final', text: 'Final answer' })
+    ]);
+  });
+
+  it('falls back to the live legacy renderer when a retained A/B composer is CSS-hidden', () => {
+    const legacyEditor = document.getElementById('prompt-textarea');
+    const stale = document.createElement('form');
+    stale.setAttribute('data-chatgpt-composer', ''); stale.style.display = 'none';
+    stale.innerHTML = '<div data-composer-markdown="" role="textbox" contenteditable="true"></div>';
+    document.body.prepend(stale);
+    user('Live legacy question');
+    abTurn('Stale A/B question', 'Stale A/B answer');
+    expect(api.composer()).toBe(legacyEditor);
+    expect(api.turns()).toHaveLength(1);
+    expect(api.messages()).toEqual([expect.objectContaining({ id: 'message-one', role: 'user', text: 'Live legacy question' })]);
+  });
+
+  it('skips a hidden retained A/B composer when a later A/B composer is live', () => {
+    installAbComposer('Live A/B draft');
+    const liveEditor = box;
+    const stale = document.createElement('form');
+    stale.setAttribute('data-chatgpt-composer', ''); stale.style.display = 'none';
+    stale.innerHTML = '<div data-composer-markdown="" role="textbox" contenteditable="true">Stale draft</div>';
+    document.body.prepend(stale);
+    expect(api.composer()).toBe(liveEditor);
+    expect(api.composer()!.textContent).toBe('Live A/B draft');
   });
 });
 

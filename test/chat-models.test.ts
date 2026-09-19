@@ -140,6 +140,48 @@ describe('durable observed ChatGPT model catalog', () => {
     expect(getChatModels()).toMatchObject({ state: 'unavailable', models: [] });
     resetChatModelsForTests(); expect(pendingChatModelRequest()).toBeNull();
   });
+  it('accepts provider family ids with spaces while keeping execution aliases exact', () => {
+    requestChatModels();
+    const observed = [{ id: '6 Astra', label: 'GPT-6 Astra', efforts: ['high'], aliases: ['gpt-6-astra'] }];
+    expect(observeChatModels({ nonce: pendingChatModelRequest()!.nonce, models: observed })).toBe(true);
+    expect(getChatModels()).toMatchObject({ state: 'ready', models: observed });
+  });
+  it('normalizes the captured picker-v2 5.6 account response without inventing Pro or Extra High', () => {
+    requestChatModels();
+    const providerSnapshot = {
+      modelPickerVersion: 2,
+      defaultModelSlug: 'gpt-5-6',
+      models: [
+        { slug: 'gpt-5-6', title: 'GPT-5.6 Sol', reasoningType: 'auto', configurableThinkingEffort: false, thinkingEfforts: [], isWorkModeModel: false },
+        { slug: 'gpt-5-6-instant', title: 'GPT-5.6 Sol', reasoningType: 'none', configurableThinkingEffort: false, thinkingEfforts: [], isWorkModeModel: false },
+        { slug: 'gpt-5-6-thinking', title: 'GPT-5.6 Sol', reasoningType: 'reasoning', configurableThinkingEffort: true, thinkingEfforts: ['standard', 'extended'], isWorkModeModel: false },
+        { slug: 'gpt-5-6-t-mini', title: 'GPT-5.6 Luna', reasoningType: 'reasoning', configurableThinkingEffort: false, thinkingEfforts: ['standard'], isWorkModeModel: false }
+      ],
+      versions: [{
+        id: '5.6', label: 'GPT-5.6 Sol', enabled: true,
+        slugs: ['gpt-5-6', 'gpt-5-6-instant', 'gpt-5-6-thinking', 'gpt-5-6-t-mini'],
+        presets: [
+          { modelSlug: 'gpt-5-6-instant', lane: 'instant', title: 'Instant', presetType: 'available' },
+          { modelSlug: 'gpt-5-6-thinking', lane: 'thinking', title: 'Medium', presetType: 'available', thinkingEffort: 'standard' },
+          { modelSlug: 'gpt-5-6-thinking', lane: 'thinking', title: 'High', presetType: 'available', thinkingEffort: 'extended' },
+          { modelSlug: 'gpt-5-6-t-mini', lane: 'thinking', title: 'Medium', presetType: 'available', thinkingEffort: 'standard' }
+        ]
+      }]
+    };
+    expect(observeChatModels({ nonce: pendingChatModelRequest()!.nonce, models: null, providerSnapshot })).toBe(true);
+    expect(getChatModels()).toMatchObject({
+      state: 'ready',
+      models: [
+        { id: 'gpt-5-6-thinking', label: 'GPT-5.6 Sol', efforts: ['none', 'medium', 'high'],
+          aliases: expect.arrayContaining(['gpt-5-6-instant', 'gpt-5-6-thinking', 'gpt-5-6', '5.6']) },
+        { id: 'gpt-5-6-t-mini', label: 'GPT-5.6 Luna', efforts: ['medium'] }
+      ]
+    });
+    const all = getChatModels().models;
+    expect(all.flatMap(model => model.efforts)).not.toContain('xhigh');
+    expect(all.flatMap(model => model.efforts)).not.toContain('pro');
+    expect(all.flatMap(model => model.aliases ?? [])).not.toContain('gpt-5-6-pro');
+  });
 });
 
 

@@ -6,16 +6,105 @@ import { z } from 'zod';
 import { logInfo } from './logger.js';
 import type { ChatModelCatalog } from '../shared/chat-models.js';
 import { readDurable, writeDurableSoon } from './durable.js';
+const catalogModels = z.array(z.object({
+  // Chat's family/version ids are provider-owned display identities. The 2026-09 picker
+  // uses values such as "6 Astra" while aliases remain exact execution slugs.
+  id: z.string().trim().min(1).max(80).regex(/^[a-zA-Z0-9._ -]+$/),
+  label: z.string().trim().min(1).max(80),
+  efforts: z.array(z.enum(REASONING_EFFORTS)).max(REASONING_EFFORTS.length),
+  aliases: z.array(z.string().min(1).max(80).regex(/^[a-zA-Z0-9._-]+$/)).max(20).optional()
+}).strict()).min(1).max(20);
+const providerSnapshot = z.object({
+  modelPickerVersion: z.number().int().min(1).max(10),
+  defaultModelSlug: z.string().regex(/^[a-zA-Z0-9._-]{1,80}$/).optional(),
+  models: z.array(z.object({
+    slug: z.string().regex(/^[a-zA-Z0-9._-]{1,80}$/),
+    title: z.string().trim().min(1).max(80),
+    reasoningType: z.enum(['none', 'auto', 'reasoning']),
+    configurableThinkingEffort: z.boolean(),
+    thinkingEfforts: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/)).max(16),
+    isWorkModeModel: z.boolean()
+  }).strict()).min(1).max(80),
+  versions: z.array(z.object({
+    id: z.string().trim().min(1).max(80),
+    label: z.string().trim().min(1).max(80),
+    enabled: z.boolean(),
+    slugs: z.array(z.string().regex(/^[a-zA-Z0-9._-]{1,80}$/)).max(24),
+    presets: z.array(z.object({
+      modelSlug: z.string().regex(/^[a-zA-Z0-9._-]{1,80}$/),
+      lane: z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/),
+      title: z.string().trim().min(1).max(80),
+      presetType: z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/),
+      thinkingEffort: z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/).optional()
+    }).strict()).max(32)
+  }).strict()).min(1).max(30)
+}).strict();
 const observation = z.object({
   nonce: z.string().uuid(),
   error: z.enum(['picker_unavailable', 'picker_close_failed', 'model_unconfirmed', 'power_unknown', 'power_unconfirmed', 'power_changed', 'restore_failed', 'inspection_failed']).optional(),
-  models: z.array(z.object({
-    id: z.string().min(1).max(80).regex(/^[a-zA-Z0-9._-]+$/),
-    label: z.string().trim().min(1).max(80),
-    efforts: z.array(z.enum(REASONING_EFFORTS)).max(REASONING_EFFORTS.length),
-    aliases: z.array(z.string().min(1).max(80).regex(/^[a-zA-Z0-9._-]+$/)).max(20).optional()
-  }).strict()).min(1).max(20).nullable()
+  models: catalogModels.nullable(),
+  providerSnapshot: providerSnapshot.optional()
 }).strict();
+type ProviderSnapshot = z.infer<typeof providerSnapshot>;
+const effortRank = new Map(REASONING_EFFORTS.map((effort, index) => [effort, index]));
+function providerEffort(native: string | undefined, lane: string, work: boolean): (typeof REASONING_EFFORTS)[number] | null {
+  if (lane === 'instant') return 'none';
+  if (lane === 'pro') return 'pro';
+  const effort = native === 'min' ? 'low'
+    : native === 'standard' ? 'medium'
+    : native === 'extended' ? 'high'
+    : native === 'max' ? (work ? 'max' : 'xhigh')
+    : native === 'minimal' ? 'minimal'
+    : native === 'low' ? 'low'
+    : native === 'medium' ? 'medium'
+    : native === 'high' ? 'high'
+    : native === 'xhigh' ? 'xhigh'
+    : native === 'ultra' ? 'ultra'
+    : null;
+  return effort && REASONING_EFFORTS.includes(effort) ? effort : null;
+}
+function normalizeProviderSnapshot(snapshot: ProviderSnapshot): z.infer<typeof catalogModels> | null {
+  const rows = new Map(snapshot.models.map(model => [model.slug, model]));
+  const groups = new Map<string, {
+    label: string; efforts: Set<(typeof REASONING_EFFORTS)[number]>; aliases: Set<string>;
+    preferred: string; rank: number;
+  }>();
+  const addAlias = (group: ReturnType<typeof groups.get>, alias: string | undefined) => {
+    if (group && alias && /^[a-zA-Z0-9._-]{1,80}$/.test(alias) && group.aliases.size < 20) group.aliases.add(alias);
+  };
+  for (const version of snapshot.versions) {
+    if (!version.enabled) continue;
+    for (const preset of version.presets) {
+      if (preset.presetType !== 'available' || !version.slugs.includes(preset.modelSlug)) continue;
+      const row = rows.get(preset.modelSlug);
+      if (!row) continue;
+      const effort = providerEffort(preset.thinkingEffort, preset.lane, row.isWorkModeModel);
+      if (!effort) continue;
+      const rank = row.configurableThinkingEffort ? 0 : row.reasoningType === 'reasoning' ? 1 : effort === 'none' ? 2 : 3;
+      let group = groups.get(row.title);
+      if (!group) {
+        group = { label: row.title, efforts: new Set(), aliases: new Set(), preferred: row.slug, rank };
+        groups.set(row.title, group);
+      }
+      group.efforts.add(effort);
+      addAlias(group, row.slug);
+      if (rank < group.rank) { group.preferred = row.slug; group.rank = rank; }
+      if (version.label === row.title && /^[a-zA-Z0-9._-]{1,80}$/.test(version.id)) addAlias(group, version.id);
+    }
+  }
+  if (snapshot.defaultModelSlug) {
+    const row = rows.get(snapshot.defaultModelSlug), group = row && groups.get(row.title);
+    if (group) addAlias(group, snapshot.defaultModelSlug);
+  }
+  const models = [...groups.values()].slice(0, 20).map(group => ({
+    id: group.preferred,
+    label: group.label,
+    efforts: REASONING_EFFORTS.filter(effort => group.efforts.has(effort))
+      .sort((a, b) => (effortRank.get(a) ?? 99) - (effortRank.get(b) ?? 99)),
+    aliases: [...group.aliases]
+  })).filter(model => model.efforts.length > 0);
+  return models.length ? models : null;
+}
 let catalog: ChatModelCatalog = { state: 'unknown', requestedAt: null, observedAt: null, models: [] };
 let request: { nonce: string; expiresAt: number; allowOpen: boolean } | null = null;
 let deadline: ReturnType<typeof setTimeout> | null = null;
@@ -23,7 +112,7 @@ let launch: { nonce: string; allowOpen: boolean; work: Promise<void> } | null = 
 let changed = (): void => {};
 let wake: ((nonce: string, allowOpen: boolean) => Promise<void>) | null = null;
 export async function restoreChatModels(): Promise<void> {
-  const saved = z.object({ observedAt: z.number().finite().positive(), models: observation.shape.models.unwrap() }).strict().safeParse(await readDurable('chat-models'));
+  const saved = z.object({ observedAt: z.number().finite().positive(), models: catalogModels }).strict().safeParse(await readDurable('chat-models'));
   if (!saved.success || request || catalog.state !== 'unknown') return;
   const models = saved.data.models;
   if (new Set(models.map(model => model.id)).size !== models.length || models.some(model => new Set(model.efforts).size !== model.efforts.length)) return;
@@ -101,7 +190,7 @@ export function pendingChatModelRequest(): { nonce: string; expiresAt: number; a
 export function observeChatModels(raw: unknown): boolean {
   expire(); const parsed = observation.safeParse(raw);
   if (!parsed.success || !request || parsed.data.nonce !== request.nonce) return false;
-  const models = parsed.data.models;
+  const models = parsed.data.providerSnapshot ? normalizeProviderSnapshot(parsed.data.providerSnapshot) : parsed.data.models;
   if (models && (new Set(models.map(model => model.id)).size !== models.length ||
     models.some(model => new Set(model.efforts).size !== model.efforts.length))) return false;
   logInfo(`model discovery observed id=${request.nonce} models=${models?.length ?? 0} elapsed_ms=${Date.now() - (catalog.requestedAt ?? Date.now())} error=${parsed.data.error ?? 'none'}`);

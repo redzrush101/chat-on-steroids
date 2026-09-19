@@ -1395,6 +1395,19 @@ while leaving ChatGPT's messages, model execution and account permissions with t
 | `background.js` | MV3 journal and HTTP transport, tab/document registry, command elections and durable ACK custody. |
 | `popup.*`, `overlay.css` | Pair/reconnect status and extension-owned presentation; no local tool authority. |
 
+ChatGPT currently exposes two renderer families that this boundary must treat as equivalent.
+The legacy page uses `#prompt-textarea`, `section[data-testid^="conversation-turn"]`,
+`data-message-id` / `data-message-author-role`, `.markdown` and the older intelligence-picker
+surface. The September 2026 A/B/Codex webview instead uses the native ChatGPT composer rooted at
+`form[data-chatgpt-composer]` with `[data-composer-markdown][role="textbox"]`, authored role units
+under `data-content-search-unit-key`, assistant prose marked by
+`data-markdown-text-style="assistant-message"`, and the explicit
+`data-codex-intelligence-trigger` reasoning control. These are presentation identities only.
+`fiber.js` still owns canonical provider message/model evidence; an A/B user unit cannot settle a
+send receipt until MAIN-world evidence stamps its real provider message id. Renderer-specific
+selectors stay in `chatgpt-dom.js` / `fiber.js`; `content.js` consumes their adapter methods rather
+than branching on provider markup itself.
+
 The popup has no extension-reload action. The temporary debug button, handler and opener
 script are retired; manual extension reload uses the browser's normal extension management.
 

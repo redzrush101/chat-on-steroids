@@ -40,8 +40,11 @@ it('switches the observed Work surface to Chat once without relying on translate
   expect(await api.prepareChatModelSurface()).toBe(true); expect(click).toHaveBeenCalledTimes(1);
   expect(await api.prepareChatModelSurface()).toBe(true); expect(click).toHaveBeenCalledTimes(1);
 });
-function fixture(versionCaption = '', closeDelay: number | null = 0) {
-  page = new JSDOM('<form><div id="prompt-textarea" contenteditable="true"></div><div data-testid="composer-trailing-actions"><button type="button" aria-haspopup="menu">Denkaufwand</button><button data-testid="send-button">Senden</button></div></form>', { url: 'https://chatgpt.com/', runScripts: 'outside-only' });
+function fixture(versionCaption = '', closeDelay: number | null = 0, renderer: 'legacy' | 'ab' = 'legacy', portaledVersions = false) {
+  const composer = renderer === 'legacy'
+    ? '<form><div id="prompt-textarea" contenteditable="true"></div><div data-testid="composer-trailing-actions"><button type="button" aria-haspopup="menu">Denkaufwand</button><button data-testid="send-button">Senden</button></div></form>'
+    : '<form data-chatgpt-composer="" data-composer-placement="thread"><div data-composer-markdown="" role="textbox" contenteditable="true" aria-label="Ask ChatGPT"></div><div><button type="button" aria-label="Select ChatGPT model" aria-haspopup="menu" aria-expanded="false" data-state="closed" data-codex-intelligence-trigger="true" data-composer-navigation-target="reasoning" data-selected-reasoning-effort="high">High</button><button data-testid="send-button">Send</button></div></form>';
+  page = new JSDOM(composer, { url: 'https://chatgpt.com/', runScripts: 'outside-only' });
   const win = page.window, doc = win.document;
   Object.defineProperty(win.HTMLElement.prototype, 'getClientRects', { value() { return this.hidden ? [] : [{}]; } });
   win.postMessage = (data: unknown) => queueMicrotask(() => win.dispatchEvent(new win.MessageEvent('message', { data, source: win as unknown as Window, origin: win.location.origin })));
@@ -58,23 +61,51 @@ function fixture(versionCaption = '', closeDelay: number | null = 0) {
   const actions = vi.fn();
   let frozen = false;
   const render = () => {
-    let panel = doc.querySelector('[data-testid="composer-intelligence-picker-content"]') as HTMLElement;
-    if (!panel) { panel = doc.createElement('div'); panel.dataset.testid = 'composer-intelligence-picker-content'; doc.body.append(panel); }
+    doc.querySelector('[data-ab-picker-submenu]')?.remove();
+    const selector = renderer === 'legacy' ? '[data-testid="composer-intelligence-picker-content"]' : '[data-ab-picker-panel]';
+    let panel = doc.querySelector(selector) as HTMLElement;
+    if (!panel) {
+      panel = doc.createElement('div');
+      if (renderer === 'legacy') panel.dataset.testid = 'composer-intelligence-picker-content';
+      else {
+        panel.setAttribute('data-ab-picker-panel', ''); panel.className = 'ModelPickerDropdownContent-BBm8p1'; panel.setAttribute('data-state', 'open');
+        panel.id = 'ab-picker-root'; trigger.setAttribute('aria-controls', panel.id);
+      }
+      doc.body.append(panel);
+    }
     (panel as any).__reactFiber$test = { memoizedProps: props, return: null };
-    panel.innerHTML = '<div role="menuitem" aria-expanded="false">Modell auswählen</div><div role="menuitem" aria-keyshortcuts="ArrowLeft ArrowRight" aria-label="Leistung"></div>';
-    panel.querySelector('[aria-expanded]')!.addEventListener('click', () => {
-      panel.innerHTML = '';
+    panel.innerHTML = renderer === 'legacy'
+      ? '<div role="menuitem" aria-expanded="false">Modell auswählen</div><div role="menuitem" aria-keyshortcuts="ArrowLeft ArrowRight" aria-label="Leistung"></div>'
+      : '<div class="ViewControls-x"><button class="ViewToggle-x" aria-expanded="false">Modell auswählen</button></div><div class="SliderKeyboardControl-x" role="slider" tabindex="0"></div>';
+    panel.querySelector(renderer === 'legacy' ? '[aria-expanded]' : '[class*="ViewToggle-"]')!.addEventListener('click', () => {
+      let versionHost = panel;
+      if (renderer === 'ab' && portaledVersions) {
+        const toggle = panel.querySelector('[class*="ViewToggle-"]')!;
+        toggle.setAttribute('aria-expanded', 'true');
+        toggle.setAttribute('aria-controls', 'ab-picker-versions');
+        versionHost = doc.createElement('div');
+        versionHost.setAttribute('data-ab-picker-submenu', '');
+        versionHost.className = 'ModelPickerDropdownContent-BBm8p1';
+        versionHost.setAttribute('data-state', 'open');
+        versionHost.id = 'ab-picker-versions';
+        doc.body.append(versionHost);
+      } else panel.innerHTML = '';
+      let rowsHost = versionHost;
+      if (renderer === 'ab') {
+        rowsHost = doc.createElement('div'); rowsHost.className = 'ModelList-I4a0SH'; versionHost.append(rowsHost);
+      }
       for (const version of versions) {
-        const row = doc.createElement('div'); row.setAttribute('role', 'menuitemradio');
+        const row = doc.createElement(renderer === 'legacy' ? 'div' : 'button');
+        if (renderer === 'legacy') row.setAttribute('role', 'menuitemradio');
         const content = doc.createElement('div'), heading = doc.createElement('div'), name = doc.createElement('div');
         name.textContent = version.displayTextForIntelligence; heading.append(name); content.append(heading); row.append(content);
         if (versionCaption) { const caption = doc.createElement('div'); caption.textContent = versionCaption; content.append(caption); }
-        row.addEventListener('keydown', event => { if (event.key !== 'Enter') return; actions('version'); if (frozen) return;
+        row.addEventListener('keydown', event => { if ((event as KeyboardEvent).key !== 'Enter') return; actions('version'); if (frozen) return;
           state.selectedVersionEntry = version; state.bucketSelections = selections[versions.indexOf(version)]!;
-          state.currentBucket = state.bucketSelections[0]!.bucket; state.currentSelection = state.bucketSelections[0]!; render(); }); panel.append(row);
+          state.currentBucket = state.bucketSelections[0]!.bucket; state.currentSelection = state.bucketSelections[0]!; render(); }); rowsHost.append(row);
       }
     });
-    panel.querySelector('[aria-keyshortcuts]')!.addEventListener('keydown', (event: any) => {
+    panel.querySelector(renderer === 'legacy' ? '[aria-keyshortcuts]' : '[class*="SliderKeyboardControl-"]')!.addEventListener('keydown', (event: any) => {
       actions('effort'); if (frozen) return;
       const at = state.bucketSelections.findIndex(c => c.bucket === state.currentBucket) + (event.key === 'ArrowRight' ? 1 : -1);
       if (!state.bucketSelections[at]) return;
@@ -82,11 +113,20 @@ function fixture(versionCaption = '', closeDelay: number | null = 0) {
     });
   };
   trigger.addEventListener('keydown', event => {
-    if (event.key === 'Enter') render();
+    if (event.key === 'Enter') {
+      if (renderer === 'ab') { trigger.setAttribute('aria-expanded', 'true'); trigger.setAttribute('data-state', 'open'); }
+      render();
+    }
   });
   doc.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || closeDelay === null) return;
-    const close = () => doc.querySelector('[data-testid="composer-intelligence-picker-content"]')?.remove();
+    const close = () => {
+      doc.querySelector(renderer === 'legacy' ? '[data-testid="composer-intelligence-picker-content"]' : '[data-ab-picker-panel]')?.remove();
+      doc.querySelector('[data-ab-picker-submenu]')?.remove();
+      if (renderer === 'ab') {
+        trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('data-state', 'closed'); trigger.removeAttribute('aria-controls');
+      }
+    };
     if (closeDelay) win.setTimeout(close, closeDelay); else close();
   });
   win.eval(fiberSource); win.eval(domSource);
@@ -214,6 +254,8 @@ it.each([true, false])('discovers 5.6 Pro outside Latest through the content wor
   const run = page.window.Function('ask', `
     const alive = true, epoch = 1, conversationId = null;
     let desktopInputBusy = false, modelCatalogBusy = false, generating = false;
+    let providerModelSnapshot = null;
+    const waitPageView = async () => false;
     ${section}
     return inspectAppModelCatalog({ nonce: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', expiresAt: Date.now() + 10000 });
   `);
@@ -355,6 +397,73 @@ it('observes direct Chrome selection with the picker closed and invalidates anot
   await scan();
   page.window.history.pushState({}, '', '/');
   expect(f.api.visibleModelSelection()).toBeNull();
+});
+it('observes and selects the captured A/B picker without depending on the legacy textarea or picker test id', async () => {
+  const f = fixture('', 0, 'ab'), doc = page.window.document;
+  const trigger = doc.querySelector('[data-codex-intelligence-trigger="true"]') as HTMLElement;
+  expect(doc.querySelector('#prompt-textarea')).toBeNull();
+  expect(doc.querySelector('[data-testid="composer-intelligence-picker-content"]')).toBeNull();
+  // Closed A/B state publishes an effort attribute even when the visible label is localized.
+  trigger.textContent = 'Beliebige Beschriftung';
+  (trigger as any).__reactFiber$test = {
+    memoizedProps: {},
+    return: { memoizedProps: { currentModelId: 'gpt-5-6-thinking' }, return: null }
+  };
+  const scan = () => new Promise<void>(resolve => {
+    const receive = (event: MessageEvent) => { if (event.data?.source === 'clf-fiber-reply') { page.window.removeEventListener('message', receive as any); resolve(); } };
+    page.window.addEventListener('message', receive as any);
+    page.window.postMessage({ source: 'clf-fiber-ask', nonce: 'ab-passive-test' }, page.window.location.origin);
+  });
+  await scan();
+  expect(f.api.visibleModelSelection()).toEqual({ model: 'gpt-5-6-thinking', reasoningEffort: 'high' });
+
+  // Restore the account-evaluated picker owner and drive the v2 model-list/effort UI.
+  (trigger as any).__reactFiber$test = { memoizedProps: f.props, return: null };
+  expect(await f.api.selectModelSettings('future-model', 'ultra')).toBe(true);
+  expect(f.state.currentSelection).toMatchObject({ modelSlug: 'future-model', thinkingEffort: 'ultra' });
+  expect(doc.querySelector('[data-ab-picker-panel]')).toBeNull();
+  expect(doc.querySelector('[data-testid="composer-intelligence-picker-content"]')).toBeNull();
+});
+it('selects an A/B model when the controlled v2 picker portals its version list as a second open menu', async () => {
+  const f = fixture('', 0, 'ab', true), doc = page.window.document;
+  expect(await f.api.selectModelSettings('future-model', 'ultra')).toBe(true);
+  expect(f.state.currentSelection).toMatchObject({ modelSlug: 'future-model', thinkingEffort: 'ultra' });
+  expect(doc.querySelector('[data-ab-picker-panel]')).toBeNull();
+  expect(doc.querySelector('[data-ab-picker-submenu]')).toBeNull();
+});
+it('ignores a CSS-hidden retained A/B composer and keeps the live legacy picker authoritative', async () => {
+  const f = fixture(), doc = page.window.document;
+  const stale = doc.createElement('form'); stale.setAttribute('data-chatgpt-composer', ''); stale.style.display = 'none';
+  stale.innerHTML = '<div data-composer-markdown="" role="textbox" contenteditable="true"></div><button aria-haspopup="menu" data-codex-intelligence-trigger="true" data-composer-navigation-target="reasoning" data-selected-reasoning-effort="low">Low</button>';
+  const staleTrigger = stale.querySelector('button')!;
+  (staleTrigger as any).__reactFiber$test = { memoizedProps: {}, return: { memoizedProps: { currentModelId: 'stale-model' }, return: null } };
+  doc.body.prepend(stale);
+  const scan = () => new Promise<void>(resolve => {
+    const receive = (event: MessageEvent) => { if (event.data?.source === 'clf-fiber-reply') { page.window.removeEventListener('message', receive as any); resolve(); } };
+    page.window.addEventListener('message', receive as any);
+    page.window.postMessage({ source: 'clf-fiber-ask', nonce: 'legacy-after-hidden-ab' }, page.window.location.origin);
+  });
+  await scan();
+  expect(f.api.visibleModelSelection()).toEqual({ model: 'gpt-5-6-thinking', reasoningEffort: 'high' });
+  expect(staleTrigger.getAttribute('data-clf-selected-model')).toBeNull();
+});
+it('skips a CSS-hidden retained A/B composer before a later live A/B picker', async () => {
+  const f = fixture('', 0, 'ab'), doc = page.window.document;
+  const liveTrigger = doc.querySelector('[data-codex-intelligence-trigger="true"]')!;
+  const stale = doc.createElement('form'); stale.setAttribute('data-chatgpt-composer', ''); stale.style.display = 'none';
+  stale.innerHTML = '<div data-composer-markdown="" role="textbox" contenteditable="true"></div><button aria-haspopup="menu" data-codex-intelligence-trigger="true" data-composer-navigation-target="reasoning" data-selected-reasoning-effort="low">Low</button>';
+  const staleTrigger = stale.querySelector('button')!;
+  (staleTrigger as any).__reactFiber$test = { memoizedProps: {}, return: { memoizedProps: { currentModelId: 'stale-model' }, return: null } };
+  doc.body.prepend(stale);
+  const scan = () => new Promise<void>(resolve => {
+    const receive = (event: MessageEvent) => { if (event.data?.source === 'clf-picker-reply') { page.window.removeEventListener('message', receive as any); resolve(); } };
+    page.window.addEventListener('message', receive as any);
+    page.window.postMessage({ source: 'clf-picker-ask', nonce: 'ab-after-hidden-ab' }, page.window.location.origin);
+  });
+  await scan();
+  expect(f.api.visibleModelSelection()).toEqual({ model: 'gpt-5-6-thinking', reasoningEffort: 'high' });
+  expect(liveTrigger.getAttribute('data-clf-selected-model')).toBe('gpt-5-6-thinking');
+  expect(staleTrigger.getAttribute('data-clf-selected-model')).toBeNull();
 });
 it('keeps an explicit model denial unavailable even when the preset is visible', async () => {
   const f = fixture(); (f.props.modelSwitcherDenialsBySlug as any)['future-model'] = { reason: 'workspace_policy' };

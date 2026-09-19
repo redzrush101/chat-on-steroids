@@ -51,7 +51,8 @@ function harness() {
     const expectedResponse = response;
     const returned = await window.fetch('/endpoint', { headers: { Authorization: 'private-test-value' }, ...init });
     expect(returned).toBe(expectedResponse);
-    if (new URL(url).origin === 'https://chatgpt.com' && /^\/backend-api\/(wham\/usage|conversation\/init|conversation\/prepare|models)$/.test(new URL(url).pathname)) await inspected;
+    if (new URL(url).origin === 'https://chatgpt.com' &&
+        /^\/backend-api\/(wham\/usage|conversation\/init|conversation\/prepare|models|conversation(?:s)?\/[0-9a-f-]{36})$/.test(new URL(url).pathname)) await inspected;
     else await new Promise(resolve => setTimeout(resolve, 0));
   }
   async function feedSse(chunks: string[], init: Record<string, unknown> = { method: 'POST' }, url = 'https://chatgpt.com/backend-api/conversation') {
@@ -239,12 +240,54 @@ describe('MAIN-world usage projection', () => {
     expect(h.posts[1]?.observedAt).toBe(h.posts[0]?.observedAt);
   });
 
-  it('emits an empty recognized quota snapshot but abstains on unrelated model metadata', async () => {
+  it('projects a bounded picker-v2 model snapshot without treating it as quota data', async () => {
     const h = harness();
-    await h.feed({ models: [{ slug: 'gpt-example', title: 'Example', max_tokens: 100000 }] }, 'https://chatgpt.com/backend-api/models');
-    expect(h.posts).toEqual([]);
+    await h.feed({
+      model_picker_version: 2,
+      default_model_slug: 'gpt-5-6',
+      account_email: 'private@example.test',
+      models: [
+        { slug: 'gpt-5-6', title: 'GPT-5.6 Sol', reasoning_type: 'auto', configurable_thinking_effort: false, thinking_efforts: [], is_work_mode_model: false, private: 'drop' },
+        { slug: 'gpt-5-6-instant', title: 'GPT-5.6 Sol', reasoning_type: 'none', configurable_thinking_effort: false, thinking_efforts: [], is_work_mode_model: false },
+        { slug: 'gpt-5-6-thinking', title: 'GPT-5.6 Sol', reasoning_type: 'reasoning', configurable_thinking_effort: true,
+          thinking_efforts: [{ thinking_effort: 'standard', extra: 'drop' }, { thinking_effort: 'extended' }], is_work_mode_model: false },
+        { slug: 'gpt-5-6-t-mini', title: 'GPT-5.6 Luna', reasoning_type: 'reasoning', configurable_thinking_effort: false,
+          thinking_efforts: [{ thinking_effort: 'standard' }], is_work_mode_model: false }
+      ],
+      versions: [{
+        id: '5.6', display_text_for_intelligence: 'GPT-5.6 Sol', enabled: true,
+        slugs: ['gpt-5-6', 'gpt-5-6-instant', 'gpt-5-6-thinking', 'gpt-5-6-t-mini'],
+        intelligence_presets: [
+          { model_slug: 'gpt-5-6-instant', lane: 'instant', title: 'Instant', preset_type: 'available' },
+          { model_slug: 'gpt-5-6-thinking', lane: 'thinking', title: 'Medium', preset_type: 'available', thinking_effort: 'standard' },
+          { model_slug: 'gpt-5-6-thinking', lane: 'thinking', title: 'High', preset_type: 'available', thinking_effort: 'extended' },
+          { model_slug: 'gpt-5-6-t-mini', lane: 'thinking', title: 'Medium', preset_type: 'available', thinking_effort: 'standard' }
+        ],
+        private_version_state: 'drop'
+      }]
+    }, 'https://chatgpt.com/backend-api/models');
+    expect(h.posts).toEqual([expect.objectContaining({
+      type: 'cos-model-snapshot',
+      observedAt: expect.any(Number),
+      snapshot: expect.objectContaining({
+        modelPickerVersion: 2,
+        defaultModelSlug: 'gpt-5-6',
+        models: expect.arrayContaining([
+          expect.objectContaining({ slug: 'gpt-5-6-thinking', title: 'GPT-5.6 Sol', thinkingEfforts: ['standard', 'extended'] })
+        ]),
+        versions: [expect.objectContaining({
+          id: '5.6',
+          label: 'GPT-5.6 Sol',
+          enabled: true,
+          presets: expect.arrayContaining([
+            { modelSlug: 'gpt-5-6-thinking', lane: 'thinking', title: 'Medium', presetType: 'available', thinkingEffort: 'standard' }
+          ])
+        })]
+      })
+    })]);
+    expect(JSON.stringify(h.posts)).not.toMatch(/private@example|private_version_state|"private"/);
     await h.feed({ conversation_detail_metadata: { model_limits: [], limits_progress: [] } }, 'https://chatgpt.com/backend-api/conversation/prepare');
-    expect(h.posts).toEqual([{ type: 'cos-usage', observedAt: expect.any(Number), rows: [] }]);
+    expect(h.posts.at(-1)).toEqual({ type: 'cos-usage', observedAt: expect.any(Number), rows: [] });
   });
 
   it('bounds the complete projection and rejects labels that could carry private or executable text', async () => {
@@ -276,6 +319,109 @@ describe('MAIN-world usage projection', () => {
     ]);
     expect(JSON.stringify(h.posts)).not.toContain('private prompt');
     expect(JSON.stringify(h.posts)).not.toContain('tool args');
+  });
+
+  it('projects public authored messages from the provider stream without private analysis or metadata', async () => {
+    const h = harness();
+    const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const final = {
+      conversation_id: conversationId,
+      message: {
+        id: '11111111-2222-4333-8444-555555555555',
+        author: { role: 'assistant' },
+        recipient: 'all',
+        channel: 'final',
+        content: { content_type: 'text', parts: ['Visible answer'] },
+        create_time: 1_800_000_000.25,
+        end_turn: true,
+        status: 'finished_successfully',
+        metadata: {
+          working_turn_id: 'turn-1',
+          turn_exchange_id: 'exchange-1',
+          private_secret: 'must-not-cross'
+        }
+      }
+    };
+    const hidden = {
+      conversation_id: conversationId,
+      message: {
+        id: '66666666-7777-4888-8999-aaaaaaaaaaaa',
+        author: { role: 'assistant' },
+        channel: 'analysis',
+        content: { content_type: 'text', parts: ['private reasoning'] }
+      }
+    };
+    await h.feedSse([
+      `data: ${JSON.stringify(hidden)}\n\n`,
+      `data: ${JSON.stringify(final)}\n\n`
+    ]);
+    expect(h.posts).toEqual([{
+      type: 'cos-stream-message',
+      conversationId,
+      observedAt: expect.any(Number),
+      live: true,
+      message: {
+        role: 'assistant',
+        messageId: '11111111-2222-4333-8444-555555555555',
+        providerMessageId: '11111111-2222-4333-8444-555555555555',
+        state: 'final',
+        final: true,
+        text: 'Visible answer',
+        authoredAt: 1_800_000_000_250
+      }
+    }]);
+    expect(JSON.stringify(h.posts)).not.toMatch(/private reasoning|private_secret|must-not-cross/);
+  });
+
+  it('keeps connector result metadata out of the public assistant transcript', async () => {
+    const h = harness();
+    const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const result = {
+      conversation_id: conversationId,
+      message: {
+        id: '11111111-2222-4333-8444-555555555555',
+        author: { role: 'assistant' },
+        recipient: 'all',
+        channel: 'final',
+        content: { content_type: 'text', parts: ['connector result must stay tool activity'] },
+        metadata: { invoked_resource: { app_name: 'private-app', resource_uri: 'tool://private' } }
+      }
+    };
+    await h.feedSse(['data: ' + JSON.stringify(result) + '\n\n']);
+    expect(h.posts).toEqual([]);
+  });
+
+  it('projects only the current branch from an existing conversation history response', async () => {
+    const h = harness();
+    const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const history = {
+      id: conversationId,
+      current_node: 'a2',
+      mapping: {
+        root: { id: 'root', parent: null, message: null },
+        u1: { id: 'u1', parent: 'root', message: {
+          id: '11111111-1111-4111-8111-111111111111', author: { role: 'user' }, create_time: 1_800_000_000,
+          content: { content_type: 'text', parts: ['Question'] }
+        } },
+        a1: { id: 'a1', parent: 'u1', message: {
+          id: '22222222-2222-4222-8222-222222222222', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+          create_time: 1_800_000_001, end_turn: true, status: 'finished_successfully',
+          content: { content_type: 'text', parts: ['Chosen answer'] }
+        } },
+        alternate: { id: 'alternate', parent: 'u1', message: {
+          id: '33333333-3333-4333-8333-333333333333', author: { role: 'assistant' }, recipient: 'all', channel: 'final',
+          content: { content_type: 'text', parts: ['Unselected retry'] }
+        } },
+        a2: { id: 'a2', parent: 'a1', message: {
+          id: '44444444-4444-4444-8444-444444444444', author: { role: 'assistant' }, recipient: 'all', channel: 'commentary',
+          content: { content_type: 'text', parts: ['Public commentary'] }
+        } }
+      }
+    };
+    await h.feed(history, `https://chatgpt.com/backend-api/conversations/${conversationId}?num_turns=10&include_has_versions=true`);
+    expect(h.posts.filter(row => row.type === 'cos-stream-message').map(row => row.message.text))
+      .toEqual(['Question', 'Chosen answer', 'Public commentary']);
+    expect(JSON.stringify(h.posts)).not.toContain('Unselected retry');
   });
 
   it('reattaches after the page runtime replaces fetch during startup', async () => {

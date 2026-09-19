@@ -1187,7 +1187,7 @@ describe('desktop input delivery and helper ownership', () => {
     });
     live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', sent);
     expect(await live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null })).toEqual({ ok: confirmed });
-    expect(selectSettings).toHaveBeenCalledWith('gpt-5.6-sol', 'high', expect.any(Function));
+    expect(selectSettings).toHaveBeenCalledWith('gpt-5.6-sol', 'high', expect.any(Function), expect.any(Function));
     expect(sent).toHaveBeenCalledTimes(confirmed ? 1 : 0);
     expect(live.sent.filter(message => message.type === 'desktop_input' && message.ack)).toHaveLength(confirmed ? 1 : 0);
   });
@@ -13463,7 +13463,7 @@ describe('the fresh chat the app opened', () => {
     release({ ok: true, command: { id: 'cmd-resume-model', type: 'resume', text, agent: null,
       model: 'gpt-5.6-sol', reasoningEffort: 'high' } });
     await settle(800); await live.hook.pullActivity(); await live.hook.flush();
-    expect(picker).toHaveBeenCalledWith('gpt-5.6-sol', 'high', expect.any(Function));
+    expect(picker).toHaveBeenCalledWith('gpt-5.6-sol', 'high', expect.any(Function), expect.any(Function));
     expect(sends).toBe(confirmed ? 1 : 0);
     const selections = live.sent.filter(message => message.type === 'events').flatMap(message => message.entries)
       .filter(entry => entry.event.kind === 'model_selection');

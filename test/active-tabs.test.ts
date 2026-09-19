@@ -41,6 +41,29 @@ describe('active ChatGPT rendering leases', () => {
     expect(control.owns(1)).toBe(false);
   });
 
+  it('dispatches only the narrow trusted provider input while the exact tab lease is current', async () => {
+    const { control, chrome } = setup();
+    await control.set('provider-input:test', [A]);
+    chrome.debugger.sendCommand.mockClear();
+    await expect(control.input(1, { kind: 'click', x: 123.5, y: 45 })).resolves.toBe(true);
+    expect(chrome.debugger.sendCommand.mock.calls.map((call: any[]) => call[1])).toEqual([
+      'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent'
+    ]);
+    expect(chrome.debugger.sendCommand).toHaveBeenNthCalledWith(2, { tabId: 1 }, 'Input.dispatchMouseEvent',
+      { type: 'mousePressed', x: 123.5, y: 45, button: 'left', clickCount: 1 });
+
+    chrome.debugger.sendCommand.mockClear();
+    await expect(control.input(1, { kind: 'key', key: 'ArrowRight' })).resolves.toBe(true);
+    expect(chrome.debugger.sendCommand.mock.calls.map((call: any[]) => call[1])).toEqual([
+      'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent'
+    ]);
+    expect(chrome.debugger.sendCommand).toHaveBeenNthCalledWith(1, { tabId: 1 }, 'Input.dispatchKeyEvent',
+      { type: 'keyDown', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
+    await expect(control.input(1, { kind: 'key', key: 'A' })).resolves.toBe(false);
+    await control.set('provider-input:test', []);
+    await expect(control.input(1, { kind: 'key', key: 'Enter' })).resolves.toBe(false);
+  });
+
   it('keeps overlapping catalog/activity scopes until both owners release them', async () => {
     const { control, attached } = setup();
     await control.set('policy', [A]);

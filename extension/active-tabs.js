@@ -78,6 +78,39 @@ export function createActiveTabs(chrome) {
     for (const [id, tab] of wanted) if (!states.has(id)) states.set(id, { id, url: tab.url, attached: false, failed: false });
     return sync();
   }
+  const KEY_INPUTS = {
+    Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 },
+    Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
+    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 }
+  };
+  async function providerInput(id, action) {
+    await sync();
+    const state = states.get(id);
+    if (!state || !state.attached || state.failed || !current(state)) return false;
+    const before = await chrome.tabs.get(id).catch(() => null);
+    if (!current(state) || !valid(before) || before.url !== state.url) return false;
+    try {
+      if (action?.kind === 'click' && Number.isFinite(action.x) && Number.isFinite(action.y) &&
+          action.x >= 0 && action.y >= 0 && action.x <= 100000 && action.y <= 100000) {
+        const point = { x: action.x, y: action.y };
+        await chrome.debugger.sendCommand({ tabId: id }, 'Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+        if (!current(state)) return false;
+        await chrome.debugger.sendCommand({ tabId: id }, 'Input.dispatchMouseEvent',
+          { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+        if (!current(state)) return false;
+        await chrome.debugger.sendCommand({ tabId: id }, 'Input.dispatchMouseEvent',
+          { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+      } else if (action?.kind === 'key' && KEY_INPUTS[action.key]) {
+        const key = KEY_INPUTS[action.key];
+        await chrome.debugger.sendCommand({ tabId: id }, 'Input.dispatchKeyEvent', { type: 'keyDown', ...key });
+        if (!current(state)) return false;
+        await chrome.debugger.sendCommand({ tabId: id }, 'Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+      } else return false;
+    } catch { return false; }
+    const after = await chrome.tabs.get(id).catch(() => null);
+    return Boolean(current(state) && valid(after) && after.url === state.url);
+  }
   return {
     // These are projections of existing owners, not persisted activity or opening authority.
     set(scope, tabs) {
@@ -85,6 +118,9 @@ export function createActiveTabs(chrome) {
       else scopes.delete(scope);
       return project();
     },
+    // Narrow trusted input for provider-owned controls while an exact operation holds this
+    // tab. No Runtime/Network access or arbitrary text reaches the debugger from this surface.
+    input(id, action) { return providerInput(id, action); },
     owns(id) { return states.has(id) || [...retiring].some(s => s.id === id); },
     revoke() { scopes.clear(); return project(); },
     navigation(id) {

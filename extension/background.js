@@ -2907,10 +2907,38 @@ const HANDLERS = {
         target.url !== (latest.url || latest.pendingUrl) ||
         (target.documentId !== undefined && target.documentId !== source.documentId) ||
         (target.navigationEpoch !== undefined && target.navigationEpoch !== source.navigationEpoch)) return { ok: false };
-    const body = JSON.stringify({ nonce: message.nonce, models: message.models, error: message.error });
-    if (body.length > 12000) return { ok: false };
+    const body = JSON.stringify({ nonce: message.nonce, models: message.models,
+      providerSnapshot: message.providerSnapshot, error: message.error });
+    if (body.length > 50_000) return { ok: false };
     const result = await call('/models', { method: 'POST', body });
     return result;
+  },
+  async provider_input(message, _sender, source) {
+    if (!activeTabs || !ownsDocument(source)) return { ok: false, error: 'stale_document' };
+    const raw = message && message.action;
+    const action = raw?.kind === 'click' && Number.isFinite(raw.x) && Number.isFinite(raw.y) &&
+      raw.x >= 0 && raw.y >= 0 && raw.x <= 100000 && raw.y <= 100000
+      ? { kind: 'click', x: raw.x, y: raw.y }
+      : raw?.kind === 'key' && ['Enter', 'Escape', 'ArrowLeft', 'ArrowRight'].includes(raw.key)
+        ? { kind: 'key', key: raw.key }
+        : null;
+    if (!action) return { ok: false, error: 'bad_provider_input' };
+    const tab = await chrome.tabs.get(source.tab).catch(() => null);
+    if (!tab || tab.pendingUrl || !isChatGptUrl(tab.url) || !ownsDocument(source)) return { ok: false, error: 'stale_document' };
+    const url = tab.url;
+    const scope = `provider-input:${source.tab}:${source.documentId}:${source.navigationEpoch}`;
+    await activeTabs.set(scope, [tab]);
+    try {
+      const current = await chrome.tabs.get(source.tab).catch(() => null);
+      if (!current || current.pendingUrl || current.url !== url || !ownsDocument(source)) return { ok: false, error: 'stale_document' };
+      const sent = await activeTabs.input(source.tab, action);
+      const latest = await chrome.tabs.get(source.tab).catch(() => null);
+      return sent && latest && !latest.pendingUrl && latest.url === url && ownsDocument(source)
+        ? { ok: true }
+        : { ok: false, error: 'provider_input_unconfirmed' };
+    } finally {
+      await activeTabs.set(scope, []).catch(() => undefined);
+    }
   },
   async usage_observation(message, _sender, source) {
     if (!ownsDocument(source) || !Array.isArray(message.rows) || message.rows.length > 80) return { ok: false };
@@ -3655,6 +3683,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     'stop_redeem',
     'stop_ack',
     'desktop_input',
+    'provider_input',
     'model_catalog',
     'plugin_refresh',
     'usage_observation',
@@ -4122,6 +4151,8 @@ async function restoreChatgptTab(id, current = () => true) {
       // still present. Request-id ownership depends on fiber.js, and re-executing it is
       // idempotent because the helper keeps one listener per protocol version.
       try {
+        await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['usage.js'] });
+        if (!current()) return false;
         await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] });
       } catch {
         // The tab can navigate between the ping and repair. Static injection covers it.
@@ -4136,6 +4167,8 @@ async function restoreChatgptTab(id, current = () => true) {
     if (!current()) return false;
     // Rebuild the isolated-world DOM adapter before the recorder that consumes it.
     await chrome.scripting.executeScript({ target: { tabId: id }, files: ['chatgpt-dom.js'] });
+    if (!current()) return false;
+    await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['usage.js'] });
     if (!current()) return false;
     // Keep the React/Fiber reader in ChatGPT's own world, exactly like the static manifest
     // declaration. An older helper may still answer too; the nonce/version gate in
