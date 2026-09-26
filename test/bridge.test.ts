@@ -1087,6 +1087,16 @@ describe('observations', () => {
     expect(reply.status).toBe(413);
     expect(reply.body.error).toBe('body_too_large');
   });
+
+  it('keeps the route-specific malformed-body response for transcript and Goal posts', async () => {
+    await pair();
+    const transcript = await request('POST', '/events', { raw: '{' });
+    expect(transcript).toMatchObject({ status: 400, body: { error: 'bad_request' } });
+    expect(transcript.body.message).toBeUndefined();
+
+    const goal = await request('POST', '/goal/objective', { raw: '{' });
+    expect(goal).toMatchObject({ status: 400, body: { error: 'bad_request', message: expect.any(String) } });
+  });
 });
 
 // ---------------------------------------------------------------- activity

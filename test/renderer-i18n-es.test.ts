@@ -1,26 +1,14 @@
-import { readFileSync } from 'node:fs';
-import { JSDOM } from 'jsdom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import es from '../src/renderer/locales/es.json';
 import zhCN from '../src/renderer/locales/zh-CN.json';
+import { expectCatalogTranslations, setupLocaleDom } from './renderer-i18n-helpers.js';
 
-let dom: JSDOM;
-beforeEach(() => {
-  vi.resetModules();
-  dom = new JSDOM(readFileSync('src/renderer/index.html', 'utf8'), { url: 'https://local.test/' });
-  Object.assign(globalThis, { window: dom.window, document: dom.window.document,
-    Node: dom.window.Node, Element: dom.window.Element, HTMLElement: dom.window.HTMLElement });
-});
-afterEach(() => { vi.restoreAllMocks(); dom.window.close(); });
+const localeDom = setupLocaleDom('elements', true);
 
 describe('Spanish app interface', () => {
   it('covers the complete source catalog and preserves every numbered argument', () => {
     expect(Object.keys(es).sort()).toEqual(Object.keys(zhCN).sort());
-    for (const [source, translation] of Object.entries(es)) {
-      expect(translation.trim(), source).not.toBe('');
-      const args = (value: string) => (value.match(/\{\d+\}/g) ?? []).sort();
-      expect(args(translation), source).toEqual(args(source));
-    }
+    expectCatalogTranslations(es);
   });
 
   it('synchronizes Spanish in setup and settings and restores the saved choice', async () => {
@@ -39,7 +27,7 @@ describe('Spanish app interface', () => {
     expect(document.documentElement.lang).toBe('es');
     expect(document.querySelector('.setup-heading h1')!.textContent).toBe('Conexión');
     select.value = 'en';
-    select.dispatchEvent(new dom.window.Event('change'));
+    select.dispatchEvent(new localeDom.dom.window.Event('change'));
     expect(button.getAttribute('aria-pressed')).toBe('false');
     button.click();
     expect(select.value).toBe('es');
@@ -108,8 +96,8 @@ describe('Spanish app interface', () => {
     const first = await import('../src/renderer/i18n.js');
     expect(first.currentLanguage()).toBe('en');
     vi.resetModules();
-    vi.spyOn(dom.window.Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable'); });
-    vi.spyOn(dom.window.Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); });
+    vi.spyOn(localeDom.dom.window.Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable'); });
+    vi.spyOn(localeDom.dom.window.Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); });
     const { initLanguage, setLanguage, currentLanguage, t } = await import('../src/renderer/i18n.js');
     initLanguage(); setLanguage('es');
     expect(currentLanguage()).toBe('es');

@@ -1,25 +1,17 @@
-import { readFileSync } from 'node:fs';
-import { JSDOM } from 'jsdom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import es from '../src/renderer/locales/es.json';
 import fr from '../src/renderer/locales/fr.json';
+import ja from '../src/renderer/locales/ja.json';
+import tr from '../src/renderer/locales/tr.json';
+import zhCN from '../src/renderer/locales/zh-CN.json';
+import zhTW from '../src/renderer/locales/zh-TW.json';
+import { expectCatalogIncludes, expectCatalogTranslations, setupLocaleDom } from './renderer-i18n-helpers.js';
 
-let dom: JSDOM;
-beforeEach(() => {
-  vi.resetModules();
-  dom = new JSDOM(readFileSync('src/renderer/index.html', 'utf8'), { url: 'https://local.test/' });
-  Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node });
-});
-afterEach(() => { vi.restoreAllMocks(); dom.window.close(); });
+const localeDom = setupLocaleDom('base', true);
 
 it('covers the current catalogs including Turkish and preserves numbered arguments', () => {
-  const keys = new Set(['es', 'zh-CN', 'zh-TW', 'ja', 'tr'].flatMap(locale =>
-    Object.keys(JSON.parse(readFileSync(`src/renderer/locales/${locale}.json`, 'utf8')))));
-  expect([...keys].filter(source => !Object.hasOwn(fr, source))).toEqual([]);
-  const args = (value: string) => (value.match(/\{\d+\}/g) ?? []).sort();
-  for (const [source, value] of Object.entries(fr)) {
-    expect(value.trim(), source).not.toBe('');
-    expect(args(value), source).toEqual(args(source));
-  }
+  expectCatalogIncludes(fr, [es, zhCN, zhTW, ja, tr]);
+  expectCatalogTranslations(fr);
 });
 
 it('restores French through both selectors and keeps drafts, focus and authored text across languages', async () => {
@@ -49,7 +41,7 @@ it('restores French through both selectors and keeps drafts, focus and authored 
   }
   expect(action.textContent).toBe('Retirer <img src=x>');
   expect(t('{0}m', [2])).toBe('2 min');
-  select.value = 'en'; select.dispatchEvent(new dom.window.Event('change'));
+  select.value = 'en'; select.dispatchEvent(new localeDom.dom.window.Event('change'));
   flag.click();
   expect(select.value).toBe('fr');
   expect(window.localStorage.getItem('cos.ui.language')).toBe('fr');
@@ -57,8 +49,8 @@ it('restores French through both selectors and keeps drafts, focus and authored 
 });
 
 it('leaves the default unchanged and can switch to French when preference storage fails', async () => {
-  vi.spyOn(dom.window.Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable'); });
-  vi.spyOn(dom.window.Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); });
+  vi.spyOn(localeDom.dom.window.Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable'); });
+  vi.spyOn(localeDom.dom.window.Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); });
   const { initLanguage, setLanguage, currentLanguage, t } = await import('../src/renderer/i18n.js');
   expect(currentLanguage()).toBe('en');
   initLanguage(); setLanguage('fr');

@@ -1,25 +1,16 @@
-import { readFileSync } from 'node:fs';
-import { JSDOM } from 'jsdom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import tr from '../src/renderer/locales/tr.json';
+import es from '../src/renderer/locales/es.json';
+import ja from '../src/renderer/locales/ja.json';
+import zhCN from '../src/renderer/locales/zh-CN.json';
+import zhTW from '../src/renderer/locales/zh-TW.json';
+import { expectCatalogIncludes, expectCatalogTranslations, setupLocaleDom } from './renderer-i18n-helpers.js';
 
-let dom: JSDOM;
-beforeEach(() => {
-  vi.resetModules();
-  dom = new JSDOM(readFileSync('src/renderer/index.html', 'utf8'), { url: 'https://local.test/' });
-  Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node });
-});
-afterEach(() => { vi.restoreAllMocks(); dom.window.close(); });
+const localeDom = setupLocaleDom('base', true);
 
 it('covers the current catalogs and preserves every numbered argument', () => {
-  const keys = new Set(['es', 'zh-CN', 'zh-TW', 'ja'].flatMap(locale =>
-    Object.keys(JSON.parse(readFileSync(`src/renderer/locales/${locale}.json`, 'utf8')))));
-  expect([...keys].filter(source => !Object.hasOwn(tr, source))).toEqual([]);
-  const args = (value: string) => (value.match(/\{\d+\}/g) ?? []).sort();
-  for (const [source, value] of Object.entries(tr)) {
-    expect(value.trim(), source).not.toBe('');
-    expect(args(value), source).toEqual(args(source));
-  }
+  expectCatalogIncludes(tr, [es, zhCN, zhTW, ja]);
+  expectCatalogTranslations(tr);
 });
 
 it('restores Turkish and synchronizes both selectors without changing drafts, focus or authored content', async () => {
@@ -45,7 +36,7 @@ it('restores Turkish and synchronizes both selectors without changing drafts, fo
     expect(select.value).toBe(locale);
   }
   expect(t('Remove {0}', ['$& /資料/Save <img src=x>'])).toBe('Kaldır: $& /資料/Save <img src=x>');
-  select.value = 'en'; select.dispatchEvent(new dom.window.Event('change'));
+  select.value = 'en'; select.dispatchEvent(new localeDom.dom.window.Event('change'));
   flag.click();
   expect(window.localStorage.getItem('cos.ui.language')).toBe('tr');
   vi.resetModules(); expect((await import('../src/renderer/i18n.js')).currentLanguage()).toBe('tr');

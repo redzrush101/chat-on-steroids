@@ -1,16 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { JSDOM } from 'jsdom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import zhCN from '../src/renderer/locales/zh-CN.json';
+import { expectCatalogTranslations, setupLocaleDom } from './renderer-i18n-helpers.js';
 
-let dom: JSDOM;
-beforeEach(() => {
-  vi.resetModules();
-  dom = new JSDOM(readFileSync('src/renderer/index.html', 'utf8'), { url: 'https://local.test/' });
-  Object.assign(globalThis, { window: dom.window, document: dom.window.document,
-    Node: dom.window.Node, Element: dom.window.Element, HTMLElement: dom.window.HTMLElement });
-});
-afterEach(() => dom.window.close());
+const localeDom = setupLocaleDom('elements');
 
 describe('Chinese app interface', () => {
   it('exposes flagged setup choices and keeps them synchronized with settings and reloads', async () => {
@@ -35,7 +27,7 @@ describe('Chinese app interface', () => {
     expect(document.querySelector('.setup-heading h1')!.textContent).toBe('连接设置');
     expect(window.localStorage.getItem('cos.ui.language')).toBe('zh-CN');
     select.value = 'en';
-    select.dispatchEvent(new dom.window.Event('change'));
+    select.dispatchEvent(new localeDom.dom.window.Event('change'));
     expect(english.getAttribute('aria-pressed')).toBe('true');
     expect(chinese.getAttribute('aria-pressed')).toBe('false');
   });
@@ -61,7 +53,7 @@ describe('Chinese app interface', () => {
     for (const locale of ['zh-CN', 'en', 'zh-CN', 'en', 'zh-CN'] as const) {
       const language = document.getElementById('uiLanguage') as HTMLSelectElement;
       language.value = locale;
-      language.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+      language.dispatchEvent(new localeDom.dom.window.Event('change', { bubbles: true }));
       expect(document.documentElement.lang).toBe(locale);
       expect(document.getElementById('chatInput')).toBe(input);
       expect(input.value).toBe('Save\n用户草稿 <script>not markup</script> 🙂');
@@ -186,10 +178,6 @@ describe('Chinese app interface', () => {
       }
     }
     expect(missing).toEqual([]);
-    for (const [key, translation] of Object.entries(catalog)) {
-      expect(translation.trim(), key).not.toBe('');
-      expect([...translation.matchAll(/\{\d+\}/g)].map(match => match[0]).sort(), key)
-        .toEqual([...key.matchAll(/\{\d+\}/g)].map(match => match[0]).sort());
-    }
+    expectCatalogTranslations(catalog);
   });
 });

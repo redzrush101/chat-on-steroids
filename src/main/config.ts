@@ -1,6 +1,5 @@
 import { REASONING_EFFORTS } from '../shared/session.js';
-import { appearanceSchema } from './appearance-schema.js';
-import { BROWSER_BRIDGE_PORTS } from '../shared/browser-bridge.js';
+import { uiSettingSchemas } from './ui-settings-schema.js';
 /**
  * Non-secret settings, stored as one small JSON file in the app's userData folder.
  * No database: there are at most a handful of roots and a dozen booleans.
@@ -14,7 +13,6 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   CAPABILITIES,
-  CHAT_BROWSERS,
   DEFAULT_CAPABILITIES,
   GOAL_MODES,
   GOAL_PROVIDERS,
@@ -43,7 +41,7 @@ import { logError } from './logger.js';
 import { RESERVED_ROOT_NAMES } from './sandbox.js';
 import { capabilitiesForPlatform } from './platform.js';
 
-export const browserBridgePortSchema = z.union([z.literal('auto'), z.literal(BROWSER_BRIDGE_PORTS)]);
+export { browserBridgePortSchema } from './ui-settings-schema.js';
 
 /**
  * Defaults for the newer sections, in one place so the schema and defaultConfig()
@@ -281,27 +279,27 @@ const configSchema = z.object({
     tunnelId: z.string().max(128), desktopTunnelId: z.string().max(128), pluginsTunnelId: z.string().max(128)
   })).max(11).refine(rows => new Set(rows.map(row => row.id)).size === rows.length, 'Duplicate setup profile').optional(),
   ui: z.object({
-    appearance: appearanceSchema.optional().catch(undefined),
-    autoContinue: z.boolean().optional().default(true),
-    chatBrowser: z.enum(CHAT_BROWSERS).optional().default('chrome'),
-    developerMode: z.boolean().optional(),
-    finishTool: z.boolean().optional(),
-    planBackend: z.enum(['chatgpt', 'api']).optional(),
-    finishAction: z.enum(['notify', 'goal']).optional(),
-    finishLeadMinutes: z.number().int().min(3).max(5).optional(),
-    backgroundChats: z.boolean().optional().default(true),
-    browserBridgePort: browserBridgePortSchema.optional().default('auto'),
-    browserOnly: z.boolean().optional().default(false),
-    autoRefreshPlugins: z.boolean().optional().default(false),
-    tabsToKeepOpen: z.number().int().min(1).max(50).optional(),
-    minimizeToTray: z.boolean(),
-    autoConnect: z.boolean(),
-    startAtLogin: z.boolean().optional().default(false),
-    privacyScreenshots: z.boolean().optional().default(false),
+    appearance: uiSettingSchemas.appearance.optional().catch(undefined),
+    autoContinue: uiSettingSchemas.autoContinue.optional().default(true),
+    chatBrowser: uiSettingSchemas.chatBrowser.optional().default('chrome'),
+    developerMode: uiSettingSchemas.developerMode.optional(),
+    finishTool: uiSettingSchemas.finishTool.optional(),
+    planBackend: uiSettingSchemas.planBackend.optional(),
+    finishAction: uiSettingSchemas.finishAction.optional(),
+    finishLeadMinutes: uiSettingSchemas.finishLeadMinutes.optional(),
+    backgroundChats: uiSettingSchemas.backgroundChats.optional().default(true),
+    browserBridgePort: uiSettingSchemas.browserBridgePort.optional().default('auto'),
+    browserOnly: uiSettingSchemas.browserOnly.optional().default(false),
+    autoRefreshPlugins: uiSettingSchemas.autoRefreshPlugins.optional().default(false),
+    tabsToKeepOpen: uiSettingSchemas.tabsToKeepOpen.optional(),
+    minimizeToTray: uiSettingSchemas.minimizeToTray,
+    autoConnect: uiSettingSchemas.autoConnect,
+    startAtLogin: uiSettingSchemas.startAtLogin.optional().default(false),
+    privacyScreenshots: uiSettingSchemas.privacyScreenshots.optional().default(false),
     // Dark is the design the app is drawn for, and a config written before the theme
     // existed has no stored answer to override — so it is the default rather than the
     // fallback. An explicit `light` is somebody's own choice and is never touched.
-    theme: z.enum(['light', 'dark']).optional().default('dark')
+    theme: uiSettingSchemas.theme.optional().default('dark')
   }),
   // Whole sections are optional, so a config written by an older build keeps working
   // and simply gains the new features switched off. The default object is spelled out
