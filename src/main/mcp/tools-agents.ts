@@ -43,6 +43,28 @@ async function measureSleepingWorkers(caller: Caller): Promise<void> {
   }
 }
 
+/** Commit a staged broker change only after its critical revision is durable. */
+async function acceptDurableStage(
+  stage: { commit(): void; rollback(): void },
+  failure: string
+): Promise<void> {
+  let accepted = false;
+  try {
+    let durable = false;
+    try {
+      durable = await persistCriticalSwarmNow();
+    } catch (error) {
+      throw new Error(`${failure} (${error instanceof Error ? error.message : String(error)})`);
+    }
+    if (!durable) throw new Error(failure);
+    stage.commit();
+    accepted = true;
+  } catch (error) {
+    if (!accepted) stage.rollback();
+    throw error;
+  }
+}
+
 /** Registers the multi-agent surface when the MCP core exposes agent tools. */
 export function registerAgentsTool(reg: SurfaceRegistrar): void {
   reg.register(
@@ -162,27 +184,10 @@ export function registerAgentsTool(reg: SurfaceRegistrar): void {
             context: input.context ?? null,
             caller: await callerNow(startedAt, { exact: true, runId: input.run_id })
           });
-          let accepted = false;
-          try {
-            let durable = false;
-            try {
-              durable = await persistCriticalSwarmNow();
-            } catch (error) {
-              throw new Error(
-                `The worker run could not cross its durable acceptance barrier. The spawn was rolled back; retry this same request. (${error instanceof Error ? error.message : String(error)})`
-              );
-            }
-            if (!durable) {
-              throw new Error(
-                'The worker run could not cross its durable acceptance barrier. The spawn was rolled back; retry this same request.'
-              );
-            }
-            staged.commit();
-            accepted = true;
-          } catch (error) {
-            if (!accepted) staged.rollback();
-            throw error;
-          }
+          await acceptDurableStage(
+            staged,
+            'The worker run could not cross its durable acceptance barrier. The spawn was rolled back; retry this same request.'
+          );
           const { created, becamePrime, runId } = staged;
           if (currentCall()) currentCall()!.caller.runId = runId;
           // Browser tabs are a publication side effect, never part of planning. They become
@@ -237,25 +242,10 @@ export function registerAgentsTool(reg: SurfaceRegistrar): void {
           // One call, one identity resolution, one all-or-nothing delivery: a prime
           // redirecting its whole run cannot end up with two of its three messages sent.
           const staged = stageMessages(caller, items);
-          let accepted = false;
-          try {
-            let durable = false;
-            try {
-              durable = await persistCriticalSwarmNow();
-            } catch (error) {
-              throw new Error(
-                `The agent message could not cross its durable acceptance barrier. Nothing was queued; retry the same message request. (${error instanceof Error ? error.message : String(error)})`
-              );
-            }
-            if (!durable) {
-              throw new Error('The agent message could not cross its durable acceptance barrier. Nothing was queued; retry the same message request.');
-            }
-            staged.commit();
-            accepted = true;
-          } catch (error) {
-            if (!accepted) staged.rollback();
-            throw error;
-          }
+          await acceptDurableStage(
+            staged,
+            'The agent message could not cross its durable acceptance barrier. Nothing was queued; retry the same message request.'
+          );
           const sent = staged.messages;
           const woken = staged.waking;
           // Reopening a sleeping worker's chat is a browser side effect, so it happens only
@@ -292,28 +282,11 @@ export function registerAgentsTool(reg: SurfaceRegistrar): void {
             );
           }
           const staged = stageFinishAgent(await callerNow(startedAt, { runId: input.run_id, member: true }), input.result);
-          let accepted = staged.repeat;
-          try {
-            if (!staged.repeat) {
-              let durable = false;
-              try {
-                durable = await persistCriticalSwarmNow();
-              } catch (error) {
-                throw new Error(
-                  `The worker finish could not cross its durable acceptance barrier. Nothing was published; retry the same finish result. (${error instanceof Error ? error.message : String(error)})`
-                );
-              }
-              if (!durable) {
-                throw new Error(
-                  'The worker finish could not cross its durable acceptance barrier. Nothing was published; retry the same finish result.'
-                );
-              }
-              staged.commit();
-              accepted = true;
-            }
-          } catch (error) {
-            if (!accepted) staged.rollback();
-            throw error;
+          if (!staged.repeat) {
+            await acceptDurableStage(
+              staged,
+              'The worker finish could not cross its durable acceptance barrier. Nothing was published; retry the same finish result.'
+            );
           }
           const { info, report, repeat } = staged;
           if (report) await recordAgentMessage(report, 'sent', info.conversationId);
