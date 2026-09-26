@@ -413,7 +413,8 @@ describe('direct browser control over the paired bridge', () => {
     try {
       const listed = await request('POST', '/browser-control', { body: poll });
       const claim = { action: 'claim', browserId, id: listed.body.requests[0], epoch: hello.body.epoch };
-      expect((await request('POST', '/browser-control', { body: { ...claim, owners: [{ owner: `request:${foreignRequest}`, sessionId: session.id }] } })).status).toBe(400);
+      expect(await request('POST', '/browser-control', { body: { ...claim, owners: [{ owner: `request:${foreignRequest}`, sessionId: session.id }] } }))
+        .toMatchObject({ status: 400, body: { error: 'invalid_browser_owners' } });
       const claimed = await request('POST', '/browser-control', { body: { ...claim,
         owners: [`request:${requestId}`, `request:${foreignRequest}`, 'request:unproved']
       } });
@@ -7909,6 +7910,8 @@ describe('unattributed activity recovery', () => {
   it('rejects a malformed stalled report', async () => {
     await pair();
     expect((await request('POST', '/status', { body: { openConversations: [], stalledConversations: ['not-a-conversation'] } })).status).toBe(400);
+    expect(await request('POST', '/status', { body: { openConversations: ['not-a-conversation'] } }))
+      .toMatchObject({ status: 400, body: { error: 'invalid_open_conversations' } });
   });
 
   it('records explicit provider access limits without scheduling a reload or silence retry', async () => {

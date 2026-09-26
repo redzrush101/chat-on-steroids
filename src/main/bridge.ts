@@ -1771,6 +1771,126 @@ async function handleInputRoute(
   return json(res, 200, { input }, origin);
 }
 
+/** Owns the browser-control request protocol and its validation/command dispatch. */
+async function handleBrowserControlRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  origin: string | null
+): Promise<void> {
+  const body = await readBody(req) as Record<string, unknown>;
+  if (!body || typeof body.browserId !== 'string' || !/^[a-f\d-]{36}$/i.test(body.browserId))
+    return json(res, 400, { error: 'invalid_browser_request' }, origin);
+  if (body.action === 'poll' && typeof body.enabled === 'boolean' && typeof body.name === 'string') {
+    const caps = effectiveCapabilities(getConfig());
+    return json(res, 200, { ...browserControl.poll(body.browserId, body.name, body.enabled), policy: { read: caps.screen, write: caps.control } }, origin);
+  }
+  if (typeof body.id !== 'string' || typeof body.epoch !== 'string' || body.id.length > 100 || body.epoch.length > 100)
+    return json(res, 400, { error: 'invalid_browser_request' }, origin);
+  if (body.action === 'claim') {
+    if (body.owners !== undefined && (!Array.isArray(body.owners) || body.owners.length > 32 ||
+        !body.owners.every(owner => typeof owner === 'string' && owner.startsWith('request:') && owner.length <= 1024)))
+      return json(res, 400, { error: 'invalid_browser_owners' }, origin);
+    const proofs = ((body.owners || []) as string[]).flatMap(owner => {
+      const sessionId = requestCorrelation(owner.slice('request:'.length))?.sessionId;
+      return sessionId ? [{ owner, sessionId }] : [];
+    });
+    const command = await browserControl.claim(body.browserId, body.id, body.epoch, proofs);
+    return json(res, command ? 200 : 409, { command }, origin);
+  }
+  if (body.action === 'check') {
+    return json(res, 200, { allowed: await browserControl.check(body.browserId, body.id, body.epoch) }, origin);
+  }
+  if (body.action === 'result' && body.result && typeof body.result === 'object' && !Array.isArray(body.result)) {
+    const result = body.result as BrowserResult;
+    if ((result.error !== undefined && typeof result.error !== 'string') || (result.image &&
+        (typeof result.image.data !== 'string' || !['image/png','image/jpeg'].includes(result.image.mimeType))))
+      return json(res, 400, { error: 'invalid_browser_result' }, origin);
+    const accepted = browserControl.result(body.browserId, body.id, body.epoch, result);
+    return json(res, accepted ? 200 : 409, { ok: accepted }, origin);
+  }
+  return json(res, 400, { error: 'invalid_browser_request' }, origin);
+}
+
+async function handleStatusRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  origin: string | null,
+  url: URL
+): Promise<void> {
+const live = liveConversations();
+let openConversations: string[] = [];
+let stalledConversations: string[] = [];
+if (req.method === 'POST') {
+  const body = await readBody(req) as { openConversations?: unknown; stalledConversations?: unknown };
+  if (!Array.isArray(body?.openConversations) || body.openConversations.length > 10_000 || body.openConversations.some(id => !conversationId(id))) {
+    return json(res, 400, { error: 'invalid_open_conversations' }, origin);
+  }
+  openConversations = body.openConversations as string[];
+  if (body.stalledConversations !== undefined &&
+      (!Array.isArray(body.stalledConversations) || body.stalledConversations.length > 10_000 || body.stalledConversations.some(id => !conversationId(id)))) {
+    return json(res, 400, { error: 'invalid_stalled_conversations' }, origin);
+  }
+  stalledConversations = (body.stalledConversations ?? []) as string[];
+}
+const openSet = new Set(openConversations);
+const tabPolicy = await browserTabPolicy(openSet);
+// A discarded or frozen tab still answers the extension's tab query, so neither the close
+// path nor the silence sweep ever fires for it — while its page can neither record nor
+// receive. Each stalled report runs the missing-tab decision minus the close side effects,
+// before this same response hands the due repair out.
+for (const stalledId of stalledConversations) {
+  if (openSet.has(stalledId)) await queueStalledTabRecovery(stalledId);
+}
+// The extension's maintenance pass, and the whole conversation about repairs: `repaired`
+// reports the one handout it was last given and has now carried out, and `repairs` is every
+// chat now due one — the chats whose local tool calls stopped being attributable to them,
+// see `tickUnattributedIncident`. Reporting first is what makes a pass that says nothing
+// mean the last repair did not happen. Empty, which is almost always, costs one request.
+const repaired = url.searchParams.get('repaired');
+const repairFailed = url.searchParams.get('repairFailed');
+const repairAction = url.searchParams.get('repairAction');
+const action = repairAction === 'reloaded' || repairAction === 'reopened' ? repairAction : null;
+if (repaired) {
+  await confirmRepair(repaired.slice(0, 64), action);
+} else if (repairFailed) {
+  await failRepairAttempt(repairFailed.slice(0, 64), action);
+}
+const revival = pendingBrowserRevival();
+const inputRows = await listInputs();
+return json(
+  res,
+  200,
+  {
+    ok: true,
+    conversations: live,
+    stopTurns: await pendingStopCommands(),
+    modelCatalogRequest: pendingChatModelRequest(),
+    pluginRefreshRequests: getConfig().ui.autoRefreshPlugins === true ? pluginRefreshPublications().map(({ surface, schemaId, connectorName }) => ({ surface, schemaId, connectorName })) : [],
+    browserPreferenceRequest: pendingBrowserPreferenceRequest(),
+    inputOpeningIds: inputRows.filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).map(row => row.id),
+    inputs: [...(await pendingBrowserInputs()).filter(input => !input.conversationId || runningToolCalls(input.conversationId) === 0),
+      ...inputRows.filter(row => row.lifetime === 'temporary-planner' && ['sent', 'cancelled', 'failed'].includes(row.state))
+        .map(row => ({ id: row.id, owner: row.owner, lifetime: row.lifetime, close: true,
+          retire: true }))],
+    background: getConfig().ui.backgroundChats === true,
+    browserOnly: getConfig().ui.browserOnly === true,
+    browserWorkArea: currentBrowserWorkArea(),
+    browserWindowBounds: browserWindowBounds(),
+    commands: commands.length,
+    // Rendering custody follows the actual command ledger, including its retirement.
+    commandIds: commands.map(command => command.id),
+    revival,
+    placement: pendingBrowserPlacement(null),
+    // A failure report closes this request. Reissuing the repair in the same response would
+    // replace the visible failure with "Trying" before a renderer could ever observe it.
+    repairs: repairFailed ? [] : await takePendingRepairs(),
+    ...tabPolicy,
+    recoveryMonitoring: browserRecoveryMonitoring()
+  },
+  origin
+);
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const receivedAt = Date.now();
   const { ok: originAllowed, origin } = originOf(req);
@@ -1908,38 +2028,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (noteBrowserSeen()) changed();
 
   if (route === '/browser-control' && req.method === 'POST') {
-    const body = await readBody(req) as Record<string, unknown>;
-    if (!body || typeof body.browserId !== 'string' || !/^[a-f\d-]{36}$/i.test(body.browserId))
-      return json(res, 400, { error: 'invalid_browser_request' }, origin);
-    if (body.action === 'poll' && typeof body.enabled === 'boolean' && typeof body.name === 'string') {
-      const caps = effectiveCapabilities(getConfig());
-      return json(res, 200, { ...browserControl.poll(body.browserId, body.name, body.enabled), policy: { read: caps.screen, write: caps.control } }, origin);
-    }
-    if (typeof body.id !== 'string' || typeof body.epoch !== 'string' || body.id.length > 100 || body.epoch.length > 100)
-      return json(res, 400, { error: 'invalid_browser_request' }, origin);
-    if (body.action === 'claim') {
-      if (body.owners !== undefined && (!Array.isArray(body.owners) || body.owners.length > 32 ||
-          !body.owners.every(owner => typeof owner === 'string' && owner.startsWith('request:') && owner.length <= 1024)))
-        return json(res, 400, { error: 'invalid_browser_owners' }, origin);
-      const proofs = ((body.owners || []) as string[]).flatMap(owner => {
-        const sessionId = requestCorrelation(owner.slice('request:'.length))?.sessionId;
-        return sessionId ? [{ owner, sessionId }] : [];
-      });
-      const command = await browserControl.claim(body.browserId, body.id, body.epoch, proofs);
-      return json(res, command ? 200 : 409, { command }, origin);
-    }
-    if (body.action === 'check') {
-      return json(res, 200, { allowed: await browserControl.check(body.browserId, body.id, body.epoch) }, origin);
-    }
-    if (body.action === 'result' && body.result && typeof body.result === 'object' && !Array.isArray(body.result)) {
-      const result = body.result as BrowserResult;
-      if ((result.error !== undefined && typeof result.error !== 'string') || (result.image &&
-          (typeof result.image.data !== 'string' || !['image/png','image/jpeg'].includes(result.image.mimeType))))
-        return json(res, 400, { error: 'invalid_browser_result' }, origin);
-      const accepted = browserControl.result(body.browserId, body.id, body.epoch, result);
-      return json(res, accepted ? 200 : 409, { ok: accepted }, origin);
-    }
-    return json(res, 400, { error: 'invalid_browser_request' }, origin);
+    return handleBrowserControlRoute(req, res, origin);
   }
 
   if (route === '/models' && req.method === 'POST') {
@@ -1974,80 +2063,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return json(res, 200, { ok: true }, origin);
   }
 
-  if (route === '/status') {
-    const live = liveConversations();
-    let openConversations: string[] = [];
-    let stalledConversations: string[] = [];
-    if (req.method === 'POST') {
-      const body = await readBody(req) as { openConversations?: unknown; stalledConversations?: unknown };
-      if (!Array.isArray(body?.openConversations) || body.openConversations.length > 10_000 || body.openConversations.some(id => !conversationId(id))) {
-        return json(res, 400, { error: 'invalid_open_conversations' }, origin);
-      }
-      openConversations = body.openConversations as string[];
-      if (body.stalledConversations !== undefined &&
-          (!Array.isArray(body.stalledConversations) || body.stalledConversations.length > 10_000 || body.stalledConversations.some(id => !conversationId(id)))) {
-        return json(res, 400, { error: 'invalid_stalled_conversations' }, origin);
-      }
-      stalledConversations = (body.stalledConversations ?? []) as string[];
-    }
-    const openSet = new Set(openConversations);
-    const tabPolicy = await browserTabPolicy(openSet);
-    // A discarded or frozen tab still answers the extension's tab query, so neither the close
-    // path nor the silence sweep ever fires for it — while its page can neither record nor
-    // receive. Each stalled report runs the missing-tab decision minus the close side effects,
-    // before this same response hands the due repair out.
-    for (const stalledId of stalledConversations) {
-      if (openSet.has(stalledId)) await queueStalledTabRecovery(stalledId);
-    }
-    // The extension's maintenance pass, and the whole conversation about repairs: `repaired`
-    // reports the one handout it was last given and has now carried out, and `repairs` is every
-    // chat now due one — the chats whose local tool calls stopped being attributable to them,
-    // see `tickUnattributedIncident`. Reporting first is what makes a pass that says nothing
-    // mean the last repair did not happen. Empty, which is almost always, costs one request.
-    const repaired = url.searchParams.get('repaired');
-    const repairFailed = url.searchParams.get('repairFailed');
-    const repairAction = url.searchParams.get('repairAction');
-    const action = repairAction === 'reloaded' || repairAction === 'reopened' ? repairAction : null;
-    if (repaired) {
-      await confirmRepair(repaired.slice(0, 64), action);
-    } else if (repairFailed) {
-      await failRepairAttempt(repairFailed.slice(0, 64), action);
-    }
-    const revival = pendingBrowserRevival();
-    const inputRows = await listInputs();
-    return json(
-      res,
-      200,
-      {
-        ok: true,
-        conversations: live,
-        stopTurns: await pendingStopCommands(),
-        modelCatalogRequest: pendingChatModelRequest(),
-        pluginRefreshRequests: getConfig().ui.autoRefreshPlugins === true ? pluginRefreshPublications().map(({ surface, schemaId, connectorName }) => ({ surface, schemaId, connectorName })) : [],
-        browserPreferenceRequest: pendingBrowserPreferenceRequest(),
-        inputOpeningIds: inputRows.filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).map(row => row.id),
-        inputs: [...(await pendingBrowserInputs()).filter(input => !input.conversationId || runningToolCalls(input.conversationId) === 0),
-          ...inputRows.filter(row => row.lifetime === 'temporary-planner' && ['sent', 'cancelled', 'failed'].includes(row.state))
-            .map(row => ({ id: row.id, owner: row.owner, lifetime: row.lifetime, close: true,
-              retire: true }))],
-        background: getConfig().ui.backgroundChats === true,
-        browserOnly: getConfig().ui.browserOnly === true,
-        browserWorkArea: currentBrowserWorkArea(),
-        browserWindowBounds: browserWindowBounds(),
-        commands: commands.length,
-        // Rendering custody follows the actual command ledger, including its retirement.
-        commandIds: commands.map(command => command.id),
-        revival,
-        placement: pendingBrowserPlacement(null),
-        // A failure report closes this request. Reissuing the repair in the same response would
-        // replace the visible failure with "Trying" before a renderer could ever observe it.
-        repairs: repairFailed ? [] : await takePendingRepairs(),
-        ...tabPolicy,
-        recoveryMonitoring: browserRecoveryMonitoring()
-      },
-      origin
-    );
-  }
+  if (route === '/status') return handleStatusRoute(req, res, origin, url);
 
   if (route === '/usage' && req.method === 'POST') {
     try {
