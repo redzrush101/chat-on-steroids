@@ -1,50 +1,42 @@
-# Working on Chat On Steroids
+# Chat On Steroids
 
-Chat On Steroids is an Electron workspace for ChatGPT. The desktop app owns local files, processes, settings, sessions, and MCP tools. A browser extension observes and controls the ChatGPT page. ChatGPT runs the model; the app does not.
+## Commands
 
-This file is a short guide for coding agents. Use the current source and tests for implementation details, [the build guide](docs/build.md) for commands, and [the tool reference](docs/tool-surface.md) for connector behavior. Do not treat an old document or test as proof that the current app behaves as intended.
-
-## Start here
-
-- Check `git status --short` and the diff of every file you plan to edit. This tree may contain someone else's unfinished work. Preserve it; do not reset, clean, or broadly reformat the tree.
-- Read the implementation at the first boundary that owns the behavior. Fix that boundary and remove obsolete branches instead of adding another fallback, watcher, timer, or mirrored state.
-- For browser behavior, inspect current page or extension evidence when possible. Source and mock tests alone cannot prove a live ChatGPT flow.
-- Follow any closer `AGENTS.md` in a subdirectory and the user's current instructions.
-
-## Code map
-
-| Area | Start with |
-| --- | --- |
-| Electron lifecycle, settings, permissions, IPC | `src/main/index.ts`, `config.ts`, `sandbox.ts`, `ipc.ts`; `src/preload/` |
-| Local tools and MCP connectors | `src/main/mcp/`; `src/main/{fsops,exec,projects,workspace}.ts` |
-| Sessions, input, history, Goal/Loop, workers | `src/main/session/`, `src/main/goal.ts`, `src/main/agents.ts`; `src/shared/` |
-| Browser bridge and companion extension | `src/main/{bridge,browser}.ts`; `extension/` |
-| Desktop UI and native control | `src/renderer/`, `src/main/computer/`, `native/` |
-| Build, packaging, releases | `scripts/`, `electron.vite.config.ts`, `electron-builder.yml`, `flake.nix`, `nix/package.nix`, `.github/workflows/` |
-
-Keep these identities distinct when changing code: a local session can outlive and rebind its ChatGPT conversation; a local project does not grant filesystem permission; an approved root does. Browser actions need the exact conversation and document, queued input needs its exact outbox entry and delivery receipt, and workers belong to a particular prime run. An unknown owner must not be guessed when a tool, message, or file could reach the wrong conversation or project.
-
-One durable fact should have one owner. Main-process code enforces permissions and records actual tool results; the extension owns browser observation and action; the renderer presents state through the fixed preload API. Async work must recheck its owner before publishing. A successful UI click or composer insertion is not a send receipt.
-
-## Build and test
-
-Use Node 24 and the committed npm lockfile. Run `npm ci` after a fresh clone or dependency change. On Linux and macOS, `nix develop` supplies the toolchain.
+Use Node 24 and the committed lockfile.
 
 ```sh
-npm run dev                 # Electron development app
+npm ci
 npm run typecheck
-npm test -- test/name.test.ts
-npm run verify              # privacy, notices, types, and full tests
+npm test -- test/<file>.test.ts
+npm run verify
 npm run build
-nix flake check             # bundle and Nix package checks
+nix develop
+nix flake check
 ```
 
-Run the nearest meaningful tests for a behavior change, including a case that should be rejected. Run `npm run verify` before a PR that changes production code or the build pipeline. Package on the target operating system and run its smoke test when changing the installed payload; [docs/build.md](docs/build.md) has the commands. Keep source, test, build, package, installed runtime, and live browser evidence separate in reports.
+`npm run verify` is the CI gate. Run the focused test file first, then the full gate for production changes. Packaging commands are in [docs/build.md](docs/build.md).
 
-Do not point tests at an installed bridge or real user data. Follow `vitest.config.ts` and existing fixtures for isolated ports and temporary state. Never print credentials, private session content, or unredacted logs to diagnose a failure; see [SECURITY.md](SECURITY.md).
+## Rules
 
-## Documentation and pull requests
+- Inspect `git status --short` before editing. Preserve unrelated changes; do not reset, clean, or reformat the repository broadly.
+- Find the owner of a behavior before changing it. Keep one owner for each durable fact and remove replaced branches instead of adding fallback state.
+- Main owns permissions, local tools, sessions, and durable writes. The extension owns browser observation and actions. The renderer uses the preload API and does not access the filesystem or secrets.
+- Keep local session IDs, ChatGPT conversation IDs, browser document IDs, project paths, outbox IDs, and worker runs separate. Reject unknown ownership instead of guessing.
+- Async code must check that its owner and generation are still current before publishing a result.
+- A composer insertion or UI click is not a delivery receipt. Record only evidence the app actually has.
+- Tests must use temporary state and isolated ports. They must not contact an installed bridge or real user data.
+- Add a focused regression test for a production bug. Test the public behavior and failure case; avoid testing private implementation details or duplicating another test.
+- Do not add tests that sleep for real time when fake timers or injected clocks can prove the same behavior.
+- Do not create worklogs, audit diaries, generated history, or documentation that repeats commits. Put rationale and validation in the commit or pull request.
+- Update existing user or developer documentation when behavior changes. Add release notes only for a release.
 
-Keep documentation useful to someone working with the current app. Update an existing guide when setup, a public tool, or a stable architecture boundary changes. Do not create dated worklogs, AI-generated audit files, investigation diaries, or files that repeat commit history. Put the change, reason, and actual validation in the PR description and commits. Add release notes only for a release, using the existing `docs/release-notes/` format.
+## Ownership map
 
-Explain the final behavior in a PR, name the tests and runtime checks that passed, and state what could not be checked. Preserve contributors' authorship when incorporating outside work. Publishing and installed-app changes require their own explicit task scope; routine source edits do not imply them.
+| Area | Files |
+| --- | --- |
+| Main process and permissions | `src/main/index.ts`, `src/main/config.ts`, `src/main/sandbox.ts`, `src/main/ipc.ts` |
+| MCP and local tools | `src/main/mcp/`, `src/main/fsops.ts`, `src/main/exec.ts`, `src/main/projects.ts`, `src/main/workspace.ts` |
+| Sessions and automation | `src/main/session/`, `src/main/goal.ts`, `src/main/agents.ts`, `src/shared/` |
+| Browser bridge and extension | `src/main/bridge.ts`, `src/main/browser.ts`, `extension/` |
+| Renderer and native desktop | `src/renderer/`, `src/main/computer/`, `native/` |
+| Build and release | `scripts/`, `electron.vite.config.ts`, `electron-builder.yml`, `flake.nix`, `nix/package.nix`, `.github/workflows/` |

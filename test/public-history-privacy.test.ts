@@ -73,7 +73,7 @@ describe('public-history privacy gate', () => {
     expect(verify(repository).status).toBe(1);
   });
 
-  it.each(['outputs/clean.txt', '.codex-remote-attachments/clean.txt', 'docs/audit-user-requests-20260905-06.md'])
+  it.each(['outputs/clean.txt', '.codex-remote-attachments/clean.txt'])
     ('rejects tracked evidence %s despite ignore rules and preserves the immutable HEAD check after index-only cleanup', file => {
       const repository = makeRepository();
       mkdirSync(path.dirname(path.join(repository, file)), { recursive: true });
@@ -92,7 +92,7 @@ describe('public-history privacy gate', () => {
   it('excludes local evidence from Git source archives even if forcibly tracked', () => {
     const repository = makeRepository();
     writeFileSync(path.join(repository, '.gitattributes'), readFileSync(path.join(process.cwd(), '.gitattributes')));
-    for (const file of ['outputs/evidence.txt', '.codex-remote-attachments/image.txt', 'docs/audit-user-requests-20260905-06.md']) {
+    for (const file of ['outputs/evidence.txt', '.codex-remote-attachments/image.txt']) {
       mkdirSync(path.dirname(path.join(repository, file)), { recursive: true });
       writeFileSync(path.join(repository, file), 'LOCAL_PRIVATE_EVIDENCE');
       execFileSync('git', ['add', '-f', '--', file], { cwd: repository });

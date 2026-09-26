@@ -19,5 +19,6 @@ run('third-party notices', node, ['scripts/generate-third-party-notices.mjs', '-
 run('native sources', node, ['scripts/package-native-sources.mjs', '--check']);
 run('typecheck', node, [path.join(root, 'node_modules', 'typescript', 'bin', 'tsc'), '--noEmit', '-p', 'tsconfig.json']);
 run('Electron resolution', node, ['-e', "require('electron')"]);
-run('tests', node, [vitest, 'run', '--exclude', 'test/mcp-shutdown.test.ts', '--exclude', 'test/computer.test.ts']);
+run('tests', node, [vitest, 'run', '--maxWorkers=8', '--exclude', 'test/mcp.test.ts', '--exclude', 'test/mcp-shutdown.test.ts', '--exclude', 'test/computer.test.ts']);
+run('MCP tests', node, [vitest, 'run', '--maxWorkers=1', 'test/mcp.test.ts']);
 run('desktop and shutdown tests', node, [vitest, 'run', '--maxWorkers=1', 'test/computer.test.ts', 'test/mcp-shutdown.test.ts']);

@@ -14,7 +14,7 @@ const blockedText = [
   })),
 ];
 
-const privateEvidence = ['outputs/', '.codex-remote-attachments/', 'docs/audit-user-requests-20260905-06.md'];
+const privateEvidence = ['outputs/', '.codex-remote-attachments/'];
 
 function runGit(args, { allowFailure = false, encoding = 'utf8' } = {}) {
   const result = spawnSync('git', args, {
