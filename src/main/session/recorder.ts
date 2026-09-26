@@ -2072,6 +2072,124 @@ async function recordSupersededMessages(
   return stored;
 }
 
+interface ObservationBatchFacts {
+  firstUser?: ChatObservation;
+  pageTitle?: ChatObservation;
+  explicitEnds: Set<string>;
+  turnStarts: Map<string, number>;
+  uncertainEndId: string | null;
+}
+
+interface ObservationActivity {
+  meaningful: boolean;
+  working: boolean;
+  terminal: boolean;
+  at?: number;
+  startedAt?: number;
+  endedTurnId?: string;
+}
+
+/**
+ * Facts later observations can establish for earlier ones. Keep this pass separate from
+ * persistence: a final reply may precede its lifecycle end in the batch, and must still
+ * see that end when deciding whether recovery is eligible.
+ */
+function observationBatchFacts(observations: readonly ChatObservation[]): ObservationBatchFacts {
+  let firstUser: ChatObservation | undefined;
+  let pageTitle: ChatObservation | undefined;
+  const explicitEnds = new Set<string>();
+  const turnStarts = new Map<string, number>();
+  let uncertainEndId: string | null = null;
+  for (const item of observations) {
+    if (!firstUser && item.kind === 'user_message') firstUser = item;
+    if (item.kind === 'conversation_title') pageTitle = item;
+    if (item.kind === 'turn_start' && item.turnId) turnStarts.set(item.turnId, item.time);
+    if (item.kind === 'turn_end' && item.turnId) {
+      explicitEnds.add(item.turnId);
+      if (item.outcome !== 'completed' && item.outcome !== 'stopped') uncertainEndId = item.turnId;
+    }
+  }
+  return { firstUser, pageTitle, explicitEnds, turnStarts, uncertainEndId };
+}
+
+/** Persist a named lifecycle boundary, then publish its in-memory projection. */
+async function recordTurnLifecycle(
+  sessionId: string,
+  live: LiveConversation | undefined,
+  item: ChatObservation,
+  base: { time: number; source: 'extension'; authoredAt?: number; turnId?: string; agent?: string },
+  activity: ObservationActivity
+): Promise<boolean> {
+  // Without a durable local id, readers cannot reconcile this boundary safely.
+  if (!item.turnId) return false;
+  if (item.kind === 'turn_start') {
+    // /events is at-least-once. A replay must not create a second boundary or reopen an ended turn.
+    if (live?.knownTurnStarts.has(item.turnId) || live?.knownTurnEnds.has(item.turnId)) return false;
+    await appendEvent(sessionId, { ...base, kind: 'turn_start' });
+    // Commit before publishing the lifecycle projection so a failed append remains retryable.
+    if (live) {
+      live.knownTurnStarts.add(item.turnId);
+      live.turnStartedAt = item.time;
+      live.turnId = item.turnId;
+      live.openTurns.add(item.turnId);
+      live.turnRequestIds = new Set<string>();
+      live.endedTurn = null;
+    }
+    activity.startedAt = Math.max(activity.startedAt ?? 0, item.time);
+    activity.meaningful = true;
+    activity.at = Math.max(activity.at ?? 0, item.time);
+    activity.working = true;
+    return true;
+  }
+  if (item.kind !== 'turn_end') return false;
+
+  // A stale named end is useful history, but it must not tear down a newer generation.
+  const stopOverride = live?.knownTurnEnds.has(item.turnId) && item.outcome === 'stopped';
+  if (live?.knownTurnEnds.has(item.turnId)) {
+    // An explicit Stop may strengthen an earlier interrupted or failed verdict once.
+    if (!stopOverride || (live.turnId && live.turnId !== item.turnId)) return false;
+    const [latest] = await readRecentEvents(sessionId, 1, { kinds: ['turn_start', 'turn_end', 'user_message'] });
+    if (latest?.kind !== 'turn_end' || latest.turnId !== item.turnId ||
+        latest.outcome === 'stopped' || item.time < latest.time) return false;
+  }
+  if (live?.turnId === item.turnId) {
+    const [latest] = await readRecentEvents(sessionId, 1, { kinds: ['turn_start', 'turn_end'] });
+    // A replay of the pre-reopen end cannot undo newer app-owned work.
+    if (latest?.kind === 'turn_start' && latest.source === 'app' && latest.turnId === item.turnId &&
+        latest.time >= item.time) return false;
+  }
+  await appendEvent(sessionId, {
+    ...base,
+    kind: 'turn_end',
+    outcome: item.outcome ?? 'unknown',
+    ...(item.outcome === 'failed' && item.reason === 'thinking_failed' ? { reason: item.reason } : {}),
+    ...(item.detail ? { detail: item.detail } : {})
+  });
+  if (live) {
+    const endedStartedAt = live.turnId === item.turnId ? live.turnStartedAt : null;
+    if (live.turnId === item.turnId || stopOverride) activity.endedTurnId = item.turnId;
+    live.knownTurnEnds.add(item.turnId);
+    live.openTurns.delete(item.turnId);
+    live.lastTurnOutcome = item.outcome ?? 'unknown';
+    live.lastTurnStartedAt = endedStartedAt;
+    // Preserve exact request ownership; Stop alone does not prove the provider stopped.
+    live.endedTurn = live.turnId === item.turnId
+      ? { turnId: item.turnId, startedAt: endedStartedAt, endedAt: item.time, requestIds: live.turnRequestIds }
+      : null;
+    live.turnRequestIds = new Set<string>();
+    if (live.turnId === item.turnId) {
+      live.turnStartedAt = null;
+      live.turnId = null;
+    }
+  }
+  if (item.outcome !== 'unknown') {
+    activity.meaningful = true;
+    activity.at = Math.max(activity.at ?? 0, item.time);
+    activity.terminal = true;
+  }
+  return true;
+}
+
 async function recordChatObservationsNow(
   conversationId: string,
   observations: readonly ChatObservation[],
@@ -2091,23 +2209,8 @@ async function recordChatObservationsNow(
       return { sessionId: lineage, stored, activity, goalCandidates: [] };
     }
   }
-  let firstUser: ChatObservation | undefined;
-  let pageTitle: ChatObservation | undefined;
-  const explicitEnds = new Set<string>();
-  const batchTurnStarts = new Map<string, number>();
-  let batchUncertainEndId: string | null = null;
-  // This batch is hot while ChatGPT is streaming. Collect the three facts needed before the
-  // write loop in one pass instead of find + find + filter + map (the latter two also allocated
-  // an intermediate array for every batch).
-  for (const item of observations) {
-    if (!firstUser && item.kind === 'user_message') firstUser = item;
-    if (item.kind === 'conversation_title') pageTitle = item;
-    if (item.kind === 'turn_start' && item.turnId) batchTurnStarts.set(item.turnId, item.time);
-    if (item.kind === 'turn_end' && item.turnId) {
-      explicitEnds.add(item.turnId);
-      if (item.outcome !== 'completed' && item.outcome !== 'stopped') batchUncertainEndId = item.turnId;
-    }
-  }
+  const { firstUser, pageTitle, explicitEnds, turnStarts: batchTurnStarts, uncertainEndId: batchUncertainEndId } =
+    observationBatchFacts(observations);
   const sessionId = await sessionForConversation(
     conversationId,
     pageTitle?.text?.trim() || observedUserTitle(firstUser?.text)
@@ -2306,93 +2409,9 @@ async function recordChatObservationsNow(
         break;
       }
       case 'turn_start':
-        // Lifecycle without a durable local id is not a lifecycle boundary a later reader
-        // can reconcile. In particular, a reloaded page once emitted an unnamed turn_end
-        // between two named generations; accepting it cleared the live turn and made the
-        // next observation open a third copy of the same ChatGPT response. Modern content.js
-        // always mints/adopts a local id before announcing a start, so an unnamed boundary is
-        // stale/legacy noise and must fail closed here as well.
-        if (!item.turnId) continue;
-        // /events is intentionally at-least-once. A response can be lost after commit, so the
-        // service worker may replay the exact same local lifecycle id. Never turn that transport
-        // retry into a second durable boundary or reopen a turn that already ended.
-        if (live?.knownTurnStarts.has(item.turnId) || live?.knownTurnEnds.has(item.turnId)) continue;
-        await appendEvent(sessionId, { ...base, kind: 'turn_start' });
-        // Commit before publishing the lifecycle projection. If append rejects, the same
-        // browser event remains eligible for its normal at-least-once retry.
-        if (live) {
-          live.knownTurnStarts.add(item.turnId);
-          // Turn lifecycle is presentation/recovery state only in 1.8. It is never consulted
-          // for MCP ownership, so a replayed journal timestamp cannot misattribute a call.
-          live.turnStartedAt = item.time;
-          live.turnId = item.turnId;
-          live.openTurns.add(item.turnId);
-          // A page-authored start is a new send; whatever end came before it is settled.
-          live.turnRequestIds = new Set<string>();
-          live.endedTurn = null;
-        }
-        // An accepted start can wake a reported worker; a later first capture of
-        // its old interim cannot. Replayed starts never reach this point.
-        activity.startedAt = Math.max(activity.startedAt ?? 0, item.time);
-        activity.meaningful = true; activity.at = Math.max(activity.at ?? 0, item.time);
-        activity.working = true;
-        break;
-      case 'turn_end': {
-        // An unnamed end closes nothing durable and, worse, used to clear whichever named
-        // turn happened to be live. Ignore it. A stale named end is still useful history for
-        // the turn it names, but it must not tear down a newer active generation.
-        if (!item.turnId) continue;
-        const stopOverride = live?.knownTurnEnds.has(item.turnId) && item.outcome === 'stopped';
-        if (live?.knownTurnEnds.has(item.turnId)) {
-          // An explicit Stop can arrive after automation's interrupted end or a
-          // failed view. The latest exact source may strengthen to stopped once;
-          // an old stop must never close a new question or generation.
-          if (!stopOverride || (live.turnId && live.turnId !== item.turnId)) continue;
-          const [latest] = await readRecentEvents(sessionId, 1, { kinds: ['turn_start', 'turn_end', 'user_message'] });
-          if (latest?.kind !== 'turn_end' || latest.turnId !== item.turnId ||
-              latest.outcome === 'stopped' || item.time < latest.time) continue;
-        }
-        if (live?.turnId === item.turnId) {
-          const [latest] = await readRecentEvents(sessionId, 1, { kinds: ['turn_start', 'turn_end'] });
-          // A replay of the pre-reopen end cannot undo newer app-owned work.
-          if (latest?.kind === 'turn_start' && latest.source === 'app' && latest.turnId === item.turnId &&
-              latest.time >= item.time) continue;
-        }
-        await appendEvent(sessionId, {
-          ...base,
-          kind: 'turn_end',
-          outcome: item.outcome ?? 'unknown',
-          ...(item.outcome === 'failed' && item.reason === 'thinking_failed' ? { reason: item.reason } : {}),
-          ...(item.detail ? { detail: item.detail } : {})
-        });
-        // As above, durable journal state owns idempotency; in-memory state follows it.
-        if (live) {
-          const endedStartedAt = live.turnId === item.turnId ? live.turnStartedAt : null;
-          if (live.turnId === item.turnId || stopOverride) activity.endedTurnId = item.turnId;
-          live.knownTurnEnds.add(item.turnId);
-          live.openTurns.delete(item.turnId);
-          live.lastTurnOutcome = item.outcome ?? 'unknown';
-          live.lastTurnStartedAt = endedStartedAt;
-          // A Stop request is not proof that the provider obeyed it. Preserve
-          // exact request ownership through every page-local end; a canonical
-          // final is checked separately before later work can reopen the turn.
-          live.endedTurn =
-            live.turnId === item.turnId
-              ? { turnId: item.turnId, startedAt: endedStartedAt, endedAt: item.time, requestIds: live.turnRequestIds }
-              : null;
-          live.turnRequestIds = new Set<string>();
-          if (live.turnId === item.turnId) {
-            live.turnStartedAt = null;
-            live.turnId = null;
-          }
-        }
-        if (item.outcome !== 'unknown') {
-          activity.meaningful = true;
-          activity.at = Math.max(activity.at ?? 0, item.time);
-          activity.terminal = true;
-        }
-        break;
-      }
+      case 'turn_end':
+        if (await recordTurnLifecycle(sessionId, live, item, base, activity)) stored++;
+        continue;
     }
     stored++;
   }
