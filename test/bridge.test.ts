@@ -855,6 +855,18 @@ describe('active agent tab discard projection', () => {
 // -------------------------------------------------------------------- auth
 
 describe('authorisation', () => {
+  it('applies the shared input ownership check across every input route', async () => {
+    await pair();
+    for (const route of [
+      '/input/claim', '/input/bind', '/input/ack', '/input/fail',
+      '/input/answer', '/input/progress', '/input/attachment'
+    ]) {
+      const reply = await request('POST', route, { body: { id: 'unknown', owner: 'page' } });
+      expect(reply.status, route).toBe(400);
+      expect(reply.body, route).toEqual({ error: 'invalid_input_claim' });
+    }
+  });
+
   it('refuses every route but /hello and /pair without a token', async () => {
     await pair();
     for (const [method, path] of [

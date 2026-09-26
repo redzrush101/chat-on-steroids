@@ -1688,6 +1688,89 @@ function chatIsWorking(conversationId: string): boolean {
   return Boolean(current && (current.generating || current.activeTurnId));
 }
 
+const INPUT_POST_ROUTES = new Set([
+  '/input/claim', '/input/bind', '/input/ack', '/input/fail',
+  '/input/answer', '/input/progress', '/input/attachment'
+]);
+
+/** Owns the browser input protocol routes as one family. */
+async function handleInputRoute(
+  route: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  origin: string | null
+): Promise<void> {
+  const body = await readBody(req) as Record<string, unknown>;
+  if (!body || typeof body.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(body.id) || typeof body.owner !== 'string' || body.owner.length > 160) {
+    return json(res, 400, { error: 'invalid_input_claim' }, origin);
+  }
+  if (route === '/input/attachment') {
+    const rows = await listInputs();
+    const entry = rows.find(row => row.id === body.id && row.owner === body.owner && row.state === 'browser' && row.sendAuthorizedAt === undefined);
+    const companion = entry?.companionInputId ? rows.find(row => row.id === entry.companionInputId &&
+      row.state === 'browser' && row.sendAuthorizedAt === undefined && row.owner === entry.owner &&
+      row.sessionId === entry.sessionId && row.conversationId === entry.conversationId && row.completedTurnId === entry.completedTurnId) : undefined;
+    const attachment = [...entry?.attachments ?? [], ...companion?.attachments ?? []].find(file => file.id === body.attachmentId);
+    if (!attachment || entry?.conversationId !== body.conversationId || typeof body.offset !== 'number') return json(res, 409, { error: 'attachment_not_owned' }, origin);
+    const { readInputAttachmentChunk } = await import('./session/input-attachments.js');
+    return json(res, 200, { chunk: await readInputAttachmentChunk(attachment, body.offset) }, origin);
+  }
+  if (route === '/input/fail') {
+    const ok = await failBrowserInput(body.id, body.owner, typeof body.error === 'string' ? body.error : 'Unable to prepare ChatGPT');
+    // A rejected picker choice invalidates cached availability. Reobserve existing
+    // browser documents through the catalog owner; failure grants no new-tab authority.
+    if (ok && body.error === 'Requested model or reasoning could not be confirmed') requestChatModels(false);
+    return json(res, 200, { ok }, origin);
+  }
+  if (route === '/input/progress') {
+    const target = conversationId(body.conversationId);
+    const temporary = (await listInputs()).some(row => row.id === body.id && row.owner === body.owner && row.lifetime === 'temporary-planner');
+    return json(res, 200, { ok: (!!target || temporary) && typeof body.partial === 'string' && await publishBrowserDecision(body.id, body.owner, target, body.partial) }, origin);
+  }
+  if (route === '/input/bind') {
+    const target = conversationId(body.conversationId);
+    if (!target) return json(res, 400, { error: 'bad_conversation_id' }, origin);
+    return json(res, 200, { ok: await bindBrowserInputProject(body.id, body.owner, target) }, origin);
+  }
+  if (route === '/input/answer' || route === '/input/ack') {
+    const entry = (await listInputs()).find((row) => row.id === body.id && row.owner === body.owner);
+    if (!entry) return json(res, 409, { error: 'input_not_owned' }, origin);
+    const deliveredConversation = conversationId(body.conversationId);
+    if ((!deliveredConversation && entry.lifetime !== 'temporary-planner') || (entry.conversationId && entry.conversationId !== deliveredConversation) ||
+        !['browser', 'decision', 'sent', ...(entry.purpose !== 'decision' && route === '/input/ack' ? ['cancelled'] : [])].includes(entry.state)) {
+      return json(res, 409, { error: 'input_not_pending' }, origin);
+    }
+    if (entry.purpose === 'decision' && entry.lifetime !== 'temporary-planner') {
+      const helperConversation = conversationId(body.conversationId);
+      if (!helperConversation) return json(res, 409, { error: 'helper_conversation_not_ready' }, origin);
+      // Role is durable before acknowledging a send or releasing its answer. A helper
+      // never inherits Goal/Loop or recovery authority, even after master Off/On.
+      await registerGoalDecisionChat(helperConversation, entry.decisionSourceSessionId);
+    }
+    if (route === '/input/answer') return json(res, 200, { ok: typeof body.response === 'string' && await completeBrowserDecision(body.id, body.owner, body.response, deliveredConversation) }, origin);
+    const acknowledged = await acknowledgeBrowserInput(body.id, body.owner, deliveredConversation, typeof body.messageId === 'string' ? body.messageId : undefined);
+    if (acknowledged && deliveredConversation) await collectRecordedBrowserDecision(deliveredConversation);
+    return json(res, 200, { ok: acknowledged }, origin);
+  }
+  const target = body.conversationId === null ? null : conversationId(body.conversationId);
+  if (body.conversationId !== null && !target) return json(res, 400, { error: 'bad_conversation_id' }, origin);
+  if (body.recoveryAction === 'stop' || body.recoveryAction === 'stopped' || body.recoveryAction === 'reloaded') {
+    const ok = !!target && recoveryInputAllowed((await findSessionByConversation(target))?.id ?? '', target) &&
+      await advanceRecoveryInput(body.id, body.owner, target, body.recoveryAction);
+    if (ok) changed();
+    return json(res, 200, { ok }, origin);
+  }
+  if (typeof body.silenceBusyTurnId === 'string') {
+    const deferred = !!target && await deferSilenceInput(body.id, target, body.silenceBusyTurnId);
+    if (deferred) changed();
+    return json(res, 200, { ok: deferred }, origin);
+  }
+  if (body.authorize === true) return json(res, 200, { ok: await authorizeBrowserInput(body.id, body.owner, target) }, origin);
+  if (target && runningToolCalls(target) > 0) return json(res, 200, { input: null }, origin);
+  const input = await claimBrowserInput(body.id, body.owner, target, body.requiresAuthorization === true);
+  return json(res, 200, { input }, origin);
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const receivedAt = Date.now();
   const { ok: originAllowed, origin } = originOf(req);
@@ -1974,76 +2057,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     } catch { return json(res, 400, { error: 'invalid_usage' }, origin); }
   }
 
-  if (['/input/claim', '/input/bind', '/input/ack', '/input/fail', '/input/answer', '/input/progress', '/input/attachment'].includes(route) && req.method === 'POST') {
-    const body = await readBody(req) as Record<string, unknown>;
-    if (!body || typeof body.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(body.id) || typeof body.owner !== 'string' || body.owner.length > 160) {
-      return json(res, 400, { error: 'invalid_input_claim' }, origin);
-    }
-    if (route === '/input/attachment') {
-      const rows = await listInputs();
-      const entry = rows.find(row => row.id === body.id && row.owner === body.owner && row.state === 'browser' && row.sendAuthorizedAt === undefined);
-      const companion = entry?.companionInputId ? rows.find(row => row.id === entry.companionInputId &&
-        row.state === 'browser' && row.sendAuthorizedAt === undefined && row.owner === entry.owner &&
-        row.sessionId === entry.sessionId && row.conversationId === entry.conversationId && row.completedTurnId === entry.completedTurnId) : undefined;
-      const attachment = [...entry?.attachments ?? [], ...companion?.attachments ?? []].find(file => file.id === body.attachmentId);
-      if (!attachment || entry?.conversationId !== body.conversationId || typeof body.offset !== 'number') return json(res, 409, { error: 'attachment_not_owned' }, origin);
-      const { readInputAttachmentChunk } = await import('./session/input-attachments.js');
-      return json(res, 200, { chunk: await readInputAttachmentChunk(attachment, body.offset) }, origin);
-    }
-    if (route === '/input/fail') {
-      const ok = await failBrowserInput(body.id, body.owner, typeof body.error === 'string' ? body.error : 'Unable to prepare ChatGPT');
-      // A rejected picker choice invalidates cached availability. Reobserve existing
-      // browser documents through the catalog owner; failure grants no new-tab authority.
-      if (ok && body.error === 'Requested model or reasoning could not be confirmed') requestChatModels(false);
-      return json(res, 200, { ok }, origin);
-    }
-    if (route === '/input/progress') {
-      const target = conversationId(body.conversationId);
-      const temporary = (await listInputs()).some(row => row.id === body.id && row.owner === body.owner && row.lifetime === 'temporary-planner');
-      return json(res, 200, { ok: (!!target || temporary) && typeof body.partial === 'string' && await publishBrowserDecision(body.id, body.owner, target, body.partial) }, origin);
-    }
-    if (route === '/input/bind') {
-      const target = conversationId(body.conversationId);
-      if (!target) return json(res, 400, { error: 'bad_conversation_id' }, origin);
-      return json(res, 200, { ok: await bindBrowserInputProject(body.id, body.owner, target) }, origin);
-    }
-    if (route === '/input/answer' || route === '/input/ack') {
-      const entry = (await listInputs()).find((row) => row.id === body.id && row.owner === body.owner);
-      if (!entry) return json(res, 409, { error: 'input_not_owned' }, origin);
-      const deliveredConversation = conversationId(body.conversationId);
-      if ((!deliveredConversation && entry.lifetime !== 'temporary-planner') || (entry.conversationId && entry.conversationId !== deliveredConversation) ||
-          !['browser', 'decision', 'sent', ...(entry.purpose !== 'decision' && route === '/input/ack' ? ['cancelled'] : [])].includes(entry.state)) {
-        return json(res, 409, { error: 'input_not_pending' }, origin);
-      }
-      if (entry.purpose === 'decision' && entry.lifetime !== 'temporary-planner') {
-        const helperConversation = conversationId(body.conversationId);
-        if (!helperConversation) return json(res, 409, { error: 'helper_conversation_not_ready' }, origin);
-        // Role is durable before acknowledging a send or releasing its answer. A helper
-        // never inherits Goal/Loop or recovery authority, even after master Off/On.
-        await registerGoalDecisionChat(helperConversation, entry.decisionSourceSessionId);
-      }
-      if (route === '/input/answer') return json(res, 200, { ok: typeof body.response === 'string' && await completeBrowserDecision(body.id, body.owner, body.response, deliveredConversation) }, origin);
-      const acknowledged = await acknowledgeBrowserInput(body.id, body.owner, deliveredConversation, typeof body.messageId === 'string' ? body.messageId : undefined);
-      if (acknowledged && deliveredConversation) await collectRecordedBrowserDecision(deliveredConversation);
-      return json(res, 200, { ok: acknowledged }, origin);
-    }
-    const target = body.conversationId === null ? null : conversationId(body.conversationId);
-    if (body.conversationId !== null && !target) return json(res, 400, { error: 'bad_conversation_id' }, origin);
-    if (body.recoveryAction === 'stop' || body.recoveryAction === 'stopped' || body.recoveryAction === 'reloaded') {
-      const ok = !!target && recoveryInputAllowed((await findSessionByConversation(target))?.id ?? '', target) &&
-        await advanceRecoveryInput(body.id, body.owner, target, body.recoveryAction);
-      if (ok) changed();
-      return json(res, 200, { ok }, origin);
-    }
-    if (typeof body.silenceBusyTurnId === 'string') {
-      const deferred = !!target && await deferSilenceInput(body.id, target, body.silenceBusyTurnId);
-      if (deferred) changed();
-      return json(res, 200, { ok: deferred }, origin);
-    }
-    if (body.authorize === true) return json(res, 200, { ok: await authorizeBrowserInput(body.id, body.owner, target) }, origin);
-    if (target && runningToolCalls(target) > 0) return json(res, 200, { input: null }, origin);
-    const input = await claimBrowserInput(body.id, body.owner, target, body.requiresAuthorization === true);
-    return json(res, 200, { input }, origin);
+  if (req.method === 'POST' && INPUT_POST_ROUTES.has(route)) {
+    return handleInputRoute(route, req, res, origin);
   }
 
   if (route === '/repairs/claim' && req.method === 'POST') {
