@@ -42,6 +42,17 @@ describe('browser extension release custody',()=>{
       .toMatchObject({value:{entries:[],nextCursor:3}});
   });
 
+  it('retrieves a retained response body through the owning tab', async()=>{
+    const {chrome,control,command}=await fixture('A',false);
+    await control.event({tabId:17},'Network.requestWillBeSent',{requestId:'request-body',request:{url:'https://fixture.invalid/data',method:'GET'},timestamp:1});
+    chrome.debugger.sendCommand.mockImplementation(async (_target:unknown, method:string) =>
+      method === 'Network.getResponseBody' ? {body:'response text',base64Encoded:false} : {}
+    );
+    expect(await control.execute({...command('list'),tool:'browser_network',args:{tabId:17,requestId:'main:request-body',body:true}}))
+      .toMatchObject({value:{body:{text:'response text',base64Encoded:false,truncated:false}}});
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({tabId:17},'Network.getResponseBody',{requestId:'request-body'});
+  });
+
   it('reads an unclaimed protected tab without attaching, detaching or taking input ownership',async()=>{
     const {chrome,control,command}=await fixture();
     const inspect={...command('list'),tool:'browser_snapshot',args:{tabId:18,selector:'main',maxNodes:30,maxChars:2000}};

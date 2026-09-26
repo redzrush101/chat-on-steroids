@@ -38,7 +38,7 @@ export function createBrowserControl(chrome, transport, protectedTab = () => fal
   }
   function newState(tabId, owner, lease = id()) {
     return { tabId, owner, lease, pageId: id(), contexts: new Map(), frames: new Map(), sessions: new Set(),
-      console: [], network: new Map(), seq: 0, consoleDropped: 0, networkDropped: 0, screenshot: null, dialog: null, initialized: false };
+      observations: observations.createState(), screenshot: null, dialog: null, initialized: false };
   }
   function invalidate(state) {
     state.pageId = id(); state.screenshot = null; state.refFrames?.clear();
@@ -574,9 +574,9 @@ export function createBrowserControl(chrome, transport, protectedTab = () => fal
       state.dialog = {type:params.type,message:cut(params.message,2000),defaultPrompt:cut(params.defaultPrompt,1000)};
     } else if (method === 'Page.javascriptDialogClosed') state.dialog = null;
     else if (['Runtime.consoleAPICalled','Runtime.exceptionThrown','Log.entryAdded'].includes(method)) {
-      observations.recordConsole(state, params);
+      observations.recordConsole(state.observations, state.pageId, params);
     } else if (method.startsWith('Network.') && params.requestId) {
-      observations.recordNetwork(state, source, method, params);
+      observations.recordNetwork(state.observations, state.pageId, source, method, params);
     }
   }
   async function detached(source) {

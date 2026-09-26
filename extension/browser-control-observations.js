@@ -1,5 +1,11 @@
 /** Retained debugger observations and their bounded public projections. */
 export function createBrowserObservations({ send, cut, error }) {
+  // Observation buffers have their own owner. The tab custodian only carries this
+  // opaque record alongside its navigation and attachment state.
+  function createState() {
+    return { console: [], network: new Map(), seq: 0, consoleDropped: 0, networkDropped: 0 };
+  }
+
   const headers = value => {
     const result = {}; let size = 0;
     for (const [key,val] of Object.entries(value || {}).slice(0,50)) {
@@ -10,20 +16,20 @@ export function createBrowserObservations({ send, cut, error }) {
     return result;
   };
 
-  function recordConsole(state, params) {
+  function recordConsole(state, pageId, params) {
     const data = params.exceptionDetails || params.entry || params;
     let level = params.exceptionDetails ? 'error' : data.level || data.type || 'info';
     level = ({warn:'warning',log:'info',verbose:'debug'})[level] || level;
     const message = params.args ? params.args.slice(0,10).map(a => cut(a.value ?? a.description ?? a.type,1200)).join(' ') : cut(data.exception?.description || data.text,2500);
-    state.console.push({seq:++state.seq,pageId:state.pageId,level,message:cut(message,3000),url:cut(data.url,1000),timestamp:Date.now()});
+    state.console.push({seq:++state.seq,pageId,level,message:cut(message,3000),url:cut(data.url,1000),timestamp:Date.now()});
     if (state.console.length > 200) { state.console.shift(); state.consoleDropped++; }
   }
 
-  function recordNetwork(state, source, method, params) {
+  function recordNetwork(state, pageId, source, method, params) {
     const key = `${source.sessionId || 'main'}:${params.requestId}`;
     let row = state.network.get(key);
     if (method === 'Network.requestWillBeSent') {
-      row = {requestId:key,nativeId:params.requestId,sessionId:source.sessionId,pageId:state.pageId,url:cut(params.request?.url,2000),method:cut(params.request?.method,20),type:cut(params.type,30),requestHeaders:headers(params.request?.headers),postData:cut(params.request?.postData,4000),startedAt:params.timestamp,seq:++state.seq};
+      row = {requestId:key,nativeId:params.requestId,sessionId:source.sessionId,pageId,url:cut(params.request?.url,2000),method:cut(params.request?.method,20),type:cut(params.type,30),requestHeaders:headers(params.request?.headers),postData:cut(params.request?.postData,4000),startedAt:params.timestamp,seq:++state.seq};
       state.network.set(key,row);
       if (state.network.size > 200) {state.network.delete(state.network.keys().next().value);state.networkDropped++;}
     } else if (row) {
@@ -34,7 +40,8 @@ export function createBrowserObservations({ send, cut, error }) {
     }
   }
 
-  async function diagnostics(state,tool,args) {
+  async function diagnostics(tab,tool,args) {
+    const state = tab.observations;
     const network = tool === 'browser_network';
     if (network && args.requestId) {
       const row = state.network.get(args.requestId);
@@ -43,7 +50,7 @@ export function createBrowserObservations({ send, cut, error }) {
       if (args.body) {
         if (row.encodedBytes > 500000) body = { unavailable:'Response exceeds the 500 KB capture limit.' };
         else try {
-          const data = await send(state,'Network.getResponseBody',{requestId:row.nativeId},row.sessionId);
+          const data = await send(tab,'Network.getResponseBody',{requestId:row.nativeId},row.sessionId);
           body = { text:cut(data.body,20000),base64Encoded:data.base64Encoded === true,truncated:data.body.length > 20000 };
         } catch { body = { unavailable:'Chrome no longer retains this response body, or it has not completed.' }; }
       }
@@ -67,5 +74,5 @@ export function createBrowserObservations({ send, cut, error }) {
     return { entries:values,nextCursor:values.at(-1)?.seq || args.after || 0,truncated:values.length < matching.length,dropped:network ? state.networkDropped : state.consoleDropped,capture:'Since debugger attachment; older events are unavailable.' };
   }
 
-  return { recordConsole, recordNetwork, diagnostics };
+  return { createState, recordConsole, recordNetwork, diagnostics };
 }
