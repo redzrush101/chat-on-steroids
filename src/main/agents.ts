@@ -3468,6 +3468,13 @@ export function thawPrimeTransfer(fromConversationId: string): void {
   for (const owner of allFamilies()) if (owner.transfer?.from === fromConversationId) owner.transfer.frozen = false;
 }
 
+function movePrimeBinding(owner: Run | DormantRun, toConversationId: string): void {
+  owner.primeConversationId = toConversationId;
+  owner.agents.get(PRIME_ID)!.info.conversationId = toConversationId;
+  for (const agent of owner.agents.values()) agent.info.primeConversationId = toConversationId;
+  owner.transfer = null;
+}
+
 /**
  * Moves the prime binding as part of the session rebind commit.
  *
@@ -3485,12 +3492,7 @@ export function commitPrimeTransfer(fromConversationId: string, toConversationId
   const owned = allFamilies().filter(owner => owner.primeConversationId === fromConversationId);
   if (!owned.length || owned.some(owner => owner.transfer?.from !== fromConversationId ||
     !owner.agents.has(PRIME_ID) || conversationOwnedOutside(owner.agents, fromConversationId, toConversationId))) return false;
-  for (const owner of owned) {
-    owner.primeConversationId = toConversationId;
-    owner.agents.get(PRIME_ID)!.info.conversationId = toConversationId;
-    for (const agent of owner.agents.values()) agent.info.primeConversationId = toConversationId;
-    owner.transfer = null;
-  }
+  for (const owner of owned) movePrimeBinding(owner, toConversationId);
   logInfo(`multi-agent: moved ${owned.length} prime fleet(s) from ${fromConversationId} to ${toConversationId}`);
   changed();
   return true;
@@ -3604,12 +3606,7 @@ export function repairPrimeConversationAfterRecovery(
   if (!owned.length) return allFamilies().some(owner => owner.primeConversationId === toConversationId);
   if (owned.some(owner => !owner.agents.has(PRIME_ID) ||
     conversationOwnedOutside(owner.agents, fromConversationId, toConversationId))) return false;
-  for (const owner of owned) {
-    owner.primeConversationId = toConversationId;
-    owner.agents.get(PRIME_ID)!.info.conversationId = toConversationId;
-    for (const agent of owner.agents.values()) agent.info.primeConversationId = toConversationId;
-    owner.transfer = null;
-  }
+  for (const owner of owned) movePrimeBinding(owner, toConversationId);
   logInfo(`multi-agent: recovered ${owned.length} prime fleet(s) from ${fromConversationId} to ${toConversationId}`);
   changed();
   return true;

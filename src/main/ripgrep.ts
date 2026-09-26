@@ -1,19 +1,9 @@
-import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { pathEntries } from './env.js';
+import { isExecutableFile } from './executable-file.js';
 
 export function ripgrepExecutableName(platform: NodeJS.Platform = process.platform): string {
   return platform === 'win32' ? 'rg.exe' : 'rg';
-}
-
-function isExecutableFile(candidate: string): boolean {
-  try {
-    if (!existsSync(candidate) || !statSync(candidate).isFile()) return false;
-    if (process.platform !== 'win32') accessSync(candidate, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**

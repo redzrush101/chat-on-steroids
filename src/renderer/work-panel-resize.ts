@@ -1,3 +1,5 @@
+import { attachHorizontalResize } from './horizontal-resize.js';
+
 const STORAGE_KEY = 'chat-on-steroids.work-panel-width';
 const MIN_WIDTH = 280;
 const MIN_MAIN_WIDTH = 360;
@@ -56,46 +58,19 @@ export function attachWorkPanelResize(host: HTMLElement, pane: HTMLElement): HTM
   handle.setAttribute('aria-label', 'Resize work panel');
   pane.prepend(handle);
 
-  let drag: { id: number; x: number; width: number } | null = null;
   const paintAria = () => setWidth(host, currentWidth(host, pane));
   paintAria();
 
-  handle.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || drag) return;
-    handle.setPointerCapture(event.pointerId);
-    drag = { id: event.pointerId, x: event.clientX, width: currentWidth(host, pane) };
-    host.classList.add('is-resizing-work-panel');
-    event.preventDefault();
-  });
-  handle.addEventListener('pointermove', event => {
-    if (drag?.id !== event.pointerId) return;
-    // The handle is the panel's left edge, so moving it left makes the right panel wider.
-    setWidth(host, drag.width + drag.x - event.clientX);
-  });
-  const finish = (event: PointerEvent): void => {
-    if (drag?.id !== event.pointerId) return;
-    drag = null;
-    host.classList.remove('is-resizing-work-panel');
-    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
-    setWidth(host, currentWidth(host, pane), true);
-  };
-  handle.addEventListener('pointerup', finish);
-  handle.addEventListener('pointercancel', finish);
-  handle.addEventListener('lostpointercapture', finish);
-
-  handle.addEventListener('dblclick', () => {
-    host.style.removeProperty('--work-panel-width');
-    try { view?.localStorage.removeItem(STORAGE_KEY); } catch { /* optional */ }
-    paintAria();
-  });
-  handle.addEventListener('keydown', event => {
-    const width = currentWidth(host, pane);
-    if (event.key === 'ArrowLeft') setWidth(host, width + 10, true);
-    else if (event.key === 'ArrowRight') setWidth(host, width - 10, true);
-    else if (event.key === 'Home') setWidth(host, MIN_WIDTH, true);
-    else if (event.key === 'End') setWidth(host, maximum(host), true);
-    else return;
-    event.preventDefault();
+  attachHorizontalResize({
+    host, handle, resizingClass: 'is-resizing-work-panel', direction: -1,
+    width: () => currentWidth(host, pane), minimum: () => MIN_WIDTH, maximum: () => maximum(host),
+    setWidth: (width, commit) => { setWidth(host, width, commit); },
+    finish: () => { setWidth(host, currentWidth(host, pane), true); },
+    reset: () => {
+      host.style.removeProperty('--work-panel-width');
+      try { view?.localStorage.removeItem(STORAGE_KEY); } catch { /* optional */ }
+      paintAria();
+    }
   });
   view?.addEventListener('resize', paintAria);
   return handle;

@@ -43,7 +43,8 @@ import { pendingBrowserInputs, claimBrowserInput, acknowledgeBrowserInput, bindB
  * submit an action, read a local file, run a process or change a permission here.
  */
 
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { safeEqual } from './safe-equal.js';
 import http from 'node:http';
 import type { BridgeStatus, CompanionDiagnostics, CompanionPageDiagnostics, CompanionTabDiagnostics, CompanionTraceEntry } from '../shared/types.js';
 import { recoveryBusyMs } from '../shared/recovery.js';
@@ -817,13 +818,6 @@ function originOf(req: http.IncomingMessage): {
   if (typeof origin !== 'string' || origin === '') return { ok: true, origin: null };
   if (origin.startsWith('chrome-extension://')) return { ok: true, origin };
   return { ok: false, origin: null };
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf8');
-  const bufB = Buffer.from(b, 'utf8');
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
 }
 
 /**
