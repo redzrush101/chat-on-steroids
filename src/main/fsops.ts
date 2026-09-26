@@ -513,6 +513,11 @@ export interface BatchTextEditResult {
   delta: LineDelta;
 }
 
+interface StagedTextEdits {
+  temps: Map<string, string>;
+  committed: PreparedTextEdit[];
+}
+
 async function prepareTextEdit(
   realPath: string,
   virtualPath: string,
@@ -572,6 +577,77 @@ export async function editTextFile(
   return { replacements: prepared.replacements, bytes: prepared.nextBytes.length, delta: prepared.delta };
 }
 
+function editTempPath(target: string, kind: 'stage' | 'rollback'): string {
+  return path.join(path.dirname(target), `.clf-${kind}-${process.pid}-${randomUUID()}.tmp`);
+}
+
+async function writeEditTemp(temp: string, data: Buffer): Promise<void> {
+  try {
+    const handle = await fs.open(temp, 'wx');
+    try {
+      await handle.writeFile(data);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch (err) {
+    await fs.rm(temp, { force: true }).catch(() => undefined);
+    throw err;
+  }
+}
+
+async function stageTextEdits(prepared: readonly PreparedTextEdit[], state: StagedTextEdits): Promise<void> {
+  // Same-directory temps keep the final rename on one volume and avoid exposing
+  // partially written target files.
+  for (const item of prepared) {
+    const temp = editTempPath(item.realPath, 'stage');
+    await writeEditTemp(temp, item.nextBytes);
+    state.temps.set(item.realPath, temp);
+  }
+}
+
+async function commitTextEdits(prepared: readonly PreparedTextEdit[], state: StagedTextEdits): Promise<void> {
+  for (const item of prepared) {
+    // Refuse to clobber a file another process changed after our preflight.
+    const current = await fs.readFile(item.realPath);
+    if (!current.equals(item.originalBytes)) {
+      throw new FsOpError(`${item.virtualPath}: file changed after preflight; batch was aborted`);
+    }
+    const temp = state.temps.get(item.realPath);
+    if (!temp) throw new FsOpError(`${item.virtualPath}: internal staging file is missing`);
+    await fs.rename(temp, item.realPath);
+    state.temps.delete(item.realPath);
+    state.committed.push(item);
+  }
+}
+
+async function rollbackTextEdits(committed: readonly PreparedTextEdit[]): Promise<string[]> {
+  const problems: string[] = [];
+  for (const item of [...committed].reverse()) {
+    try {
+      const current = await fs.readFile(item.realPath);
+      if (!current.equals(item.nextBytes)) {
+        problems.push(`${item.virtualPath} changed again before rollback`);
+        continue;
+      }
+      const temp = editTempPath(item.realPath, 'rollback');
+      await writeEditTemp(temp, item.originalBytes);
+      try {
+        await fs.rename(temp, item.realPath);
+      } finally {
+        await fs.rm(temp, { force: true }).catch(() => undefined);
+      }
+    } catch (rollbackErr) {
+      problems.push(`${item.virtualPath}: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
+    }
+  }
+  return problems;
+}
+
+async function removeStagedTextEdits(temps: Map<string, string>): Promise<void> {
+  for (const temp of temps.values()) await fs.rm(temp, { force: true }).catch(() => undefined);
+}
+
 /**
  * Preflights every file before touching any of them, stages complete replacements in
  * sibling temp files, then commits by rename. A commit-time failure triggers a
@@ -610,67 +686,14 @@ export async function editTextFiles(
     prepared.push(item);
   }
 
-  const staged = new Map<string, string>();
-  const committed: PreparedTextEdit[] = [];
-  const makeTemp = (target: string, kind: 'stage' | 'rollback'): string =>
-    path.join(path.dirname(target), `.clf-${kind}-${process.pid}-${randomUUID()}.tmp`);
-  const writeTemp = async (temp: string, data: Buffer): Promise<void> => {
-    try {
-      const handle = await fs.open(temp, 'wx');
-      try {
-        await handle.writeFile(data);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-    } catch (err) {
-      await fs.rm(temp, { force: true }).catch(() => undefined);
-      throw err;
-    }
-  };
+  const state: StagedTextEdits = { temps: new Map(), committed: [] };
 
   try {
-    // Stage every complete new file first. Same-directory temps keep the final rename
-    // on one volume and avoid exposing partially written target files.
-    for (const item of prepared) {
-      const temp = makeTemp(item.realPath, 'stage');
-      await writeTemp(temp, item.nextBytes);
-      staged.set(item.realPath, temp);
-    }
-
-    for (const item of prepared) {
-      // Refuse to clobber a file another process changed after our preflight.
-      const current = await fs.readFile(item.realPath);
-      if (!current.equals(item.originalBytes)) {
-        throw new FsOpError(`${item.virtualPath}: file changed after preflight; batch was aborted`);
-      }
-      const temp = staged.get(item.realPath);
-      if (!temp) throw new FsOpError(`${item.virtualPath}: internal staging file is missing`);
-      await fs.rename(temp, item.realPath);
-      staged.delete(item.realPath);
-      committed.push(item);
-    }
+    await stageTextEdits(prepared, state);
+    await commitTextEdits(prepared, state);
   } catch (err) {
-    const rollbackProblems: string[] = [];
-    for (const item of [...committed].reverse()) {
-      try {
-        const current = await fs.readFile(item.realPath);
-        if (!current.equals(item.nextBytes)) {
-          rollbackProblems.push(`${item.virtualPath} changed again before rollback`);
-          continue;
-        }
-        const rollbackTemp = makeTemp(item.realPath, 'rollback');
-        await writeTemp(rollbackTemp, item.originalBytes);
-        try {
-          await fs.rename(rollbackTemp, item.realPath);
-        } finally {
-          await fs.rm(rollbackTemp, { force: true }).catch(() => undefined);
-        }
-      } catch (rollbackErr) {
-        rollbackProblems.push(`${item.virtualPath}: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
-      }
-    }
-    for (const temp of staged.values()) await fs.rm(temp, { force: true }).catch(() => undefined);
+    const rollbackProblems = await rollbackTextEdits(state.committed);
+    await removeStagedTextEdits(state.temps);
 
     const reason = err instanceof Error ? err.message : String(err);
     if (rollbackProblems.length > 0) {
