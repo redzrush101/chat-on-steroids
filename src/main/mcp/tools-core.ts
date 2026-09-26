@@ -40,7 +40,12 @@ import {
   type Hunk
 } from '../codex/apply-patch/index.js';
 import { maybeParseApplyPatchForExec } from '../codex/apply-patch/invocation.js';
-import { composeCommandBatch, parseCommandBatchSections } from '../codex/command-batch.js';
+import {
+  commandBatchExitIsBenign,
+  projectCommandBatchNotes,
+  commandBatchOutcome,
+  composeCommandBatch
+} from '../codex/command-batch.js';
 import { EXEC_OUTPUT_CEILING_POLICY, unifiedExecManager } from '../codex/manager.js';
 import {
   backgroundExecObligations,
@@ -778,10 +783,10 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             const output = await unifiedExecManager.execCommand({
               classifyExit: (exitCode, rawOutput) => {
                 if (!batch) return nonZeroExitIsBenign(boundCommand, exitCode, rawOutput);
-                const sections = parseCommandBatchSections(rawOutput, batch.marker);
-                const nonzero = sections.filter(section => section.exitCode !== 0);
-                return exitCode !== null && exitCode !== 0 && sections.length === rawCommands.length && nonzero.length > 0 &&
-                  nonzero.every(section => nonZeroExitIsBenign(boundCommands[section.index - 1] ?? '', section.exitCode, section.text));
+                return commandBatchExitIsBenign(
+                  rawOutput, batch.marker, rawCommands.length, exitCode,
+                  (section) => nonZeroExitIsBenign(boundCommands[section.index - 1] ?? '', section.exitCode, section.text)
+                );
               },
               batchMarker: batch?.marker,
               command: executionCommand,
@@ -811,8 +816,9 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             // "no matches" is exit 1 and reporting the batch as failed is what makes a model run
             // the whole thing again. Require a complete set of sections, so a truncated tail
             // cannot let an unseen real failure pass as benign.
-            const batchSections = batch ? parseCommandBatchSections(output.rawOutput.toString('utf8'), batch.marker) : [];
-            const nonZeroSections = batchSections.filter((section) => section.exitCode !== 0);
+            const batchOutcome = batch
+              ? commandBatchOutcome(output.rawOutput.toString('utf8'), batch.marker, rawCommands.length)
+              : null;
             const benign = output.benignExit === true;
             noteExec({
               completion: output.completion,
@@ -825,54 +831,21 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             });
             noteDetail(commandDetail.replace(/\s+/g, ' ').slice(0, 120));
             logInfo(`tool exec_command ${shell.shellType} -> ${output.processId ?? `exit ${output.exitCode ?? 'unknown'}`}`);
-            // `benign` was previously spent only on the error count, leaving the model to read
-            // `Process exited with code 1` under an empty body and re-run a search that had
-            // already answered. It is the same classification, now also said out loud.
-            // A batch carries one top-line exit code for several commands, and in the recorded
-            // sessions 69 of 91 non-zero batches had at least one command that succeeded. Say
-            // which ones, so the model reruns the failed command and not the whole batch.
-            const mixedBatch =
-              isBatch &&
-              !benign &&
-              batchSections.length === rawCommands.length &&
-              nonZeroSections.length > 0 &&
-              nonZeroSections.length < batchSections.length
-                ? [
-                    `Batch: ${nonZeroSections.map((section) => `command ${section.index} exited ${section.exitCode}`).join(', ')}; ` +
-                      `the other ${batchSections.length - nonZeroSections.length === 1 ? 'command' : `${batchSections.length - nonZeroSections.length} commands`} exited 0. ` +
-                      'The top-line exit code is the first non-zero one.'
-                  ]
-                : [];
-            const notes = [
-              ...commandNotes,
-              ...mixedBatch,
-              ...(benign
-                ? isBatch
-                  ? nonZeroSections.map(
-                      (section) =>
-                        `Command ${section.index}: ${benignExitNote(
-                          boundCommands[section.index - 1] ?? '',
-                          shell.shellType,
-                          section.exitCode,
-                          section.text
-                        )}`
-                    )
-                  : [benignExitNote(boundCommand, shell.shellType, output.exitCode, responseText)]
-                : []),
-              // A batch parses each command independently. Its earlier mutations may already
-              // have succeeded when a later command has a syntax error: never tell the caller
-              // to rerun the whole batch on the strength of that one diagnostic. Completed
-              // authenticated sections also keep source text printed by a successful read from
-              // becoming an invented shell failure. With incomplete framing, abstain.
-              ...(isBatch
-                ? nonZeroSections.flatMap((section) =>
-                    execRecoveryHints(rawCommands[section.index - 1] ?? '', section.text, shell.shellType)
-                      .map((hint) => `Command ${section.index}: ${hint}`)
-                  )
+            const batchNotes = batchOutcome
+              ? projectCommandBatchNotes(batchOutcome, {
+                  benign,
+                  commandFor: (section) => boundCommands[section.index - 1] ?? '',
+                  benignNote: (section, command) => benignExitNote(
+                    command, shell.shellType, section.exitCode, section.text
+                  ),
+                  recoveryNotes: (section, command) => execRecoveryHints(command, section.text, shell.shellType)
+                })
+              : benign
+                ? [benignExitNote(boundCommand, shell.shellType, output.exitCode, responseText)]
                 : output.exitCode !== null && output.exitCode !== 0
                   ? execRecoveryHints(rawCommands[0] ?? '', responseText, shell.shellType)
-                  : [])
-            ];
+                  : [];
+            const notes = [...commandNotes, ...batchNotes];
             return {
               content: [{ type: 'text' as const, text: withExecNotes(responseText, notes) }],
               structuredContent: execCommandStructuredOutput(output)

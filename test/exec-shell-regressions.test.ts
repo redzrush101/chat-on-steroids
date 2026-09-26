@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { bindBundledRipgrep, execRecoveryHints, nonZeroExitIsBenign, repairPowerShellQuoting } from '../src/main/exec-hints.js';
 import { deriveExecArgs, getShellByModelProvidedPath, withPosixPathPrefix } from '../src/main/codex/shell.js';
-import { composeCommandBatch, parseCommandBatchSections } from '../src/main/codex/command-batch.js';
+import {
+  commandBatchExitIsBenign,
+  commandBatchOutcome,
+  composeCommandBatch,
+  parseCommandBatchSections,
+  projectCommandBatchNotes
+} from '../src/main/codex/command-batch.js';
 import { locateRipgrep } from '../src/main/ripgrep.js';
 import { TempDirPool } from './helpers.js';
 
@@ -38,6 +44,40 @@ describe('native shell argument and batch parity', () => {
         .toEqual([{ exit: 0, text: output.trim() }, { exit: 0, text: output.trim() }]);
     });
   }
+});
+
+it('uses complete framed command outcomes for benign and mixed batch reporting', () => {
+  const marker = '0123456789abcdef01234567';
+  const complete = [
+    `--- command 1/2 --- [clf-batch:${marker}]`,
+    'no matches',
+    `--- exit code 1 --- [clf-batch:${marker}]`,
+    `--- command 2/2 --- [clf-batch:${marker}]`,
+    'found it',
+    `--- exit code 0 --- [clf-batch:${marker}]`
+  ].join('\n');
+  const outcome = commandBatchOutcome(complete, marker, 2);
+  expect(outcome.complete).toBe(true);
+  expect(outcome.mixed).toBe(true);
+  const projected = projectCommandBatchNotes(outcome, {
+    benign: false,
+    commandFor: (section) => `cmd ${section.index}`,
+    benignNote: () => 'no matches',
+    recoveryNotes: (_section, command) => [`recovery for ${command}`]
+  });
+  expect(projected).toEqual([
+    'Batch: command 1 exited 1; the other command exited 0. The top-line exit code is the first non-zero one.',
+    'Command 1: recovery for cmd 1'
+  ]);
+  expect(projectCommandBatchNotes(outcome, {
+    benign: true,
+    commandFor: (section) => `cmd ${section.index}`,
+    benignNote: () => 'returned no matches',
+    recoveryNotes: () => []
+  })).toEqual(['Command 1: returned no matches']);
+  expect(commandBatchExitIsBenign(complete, marker, 2, 1, (section) => section.text === 'no matches')).toBe(true);
+  expect(commandBatchExitIsBenign(complete, marker, 2, 1, () => false)).toBe(false);
+  expect(commandBatchExitIsBenign(complete.split('\n').slice(0, 3).join('\n'), marker, 2, 1, () => true)).toBe(false);
 });
 
 const zsh = getShellByModelProvidedPath('zsh');

@@ -138,6 +138,81 @@ export interface CommandBatchSection {
   text: string;
 }
 
+/** Parsed result facts shared by exit classification and the user-facing batch summary. */
+export interface CommandBatchOutcome {
+  sections: CommandBatchSection[];
+  nonZeroSections: CommandBatchSection[];
+  complete: boolean;
+  mixed: boolean;
+}
+
+/** Keep framing completeness and per-command exit facts derived from the same parsed sections. */
+export function commandBatchOutcome(output: string, marker: string, commandCount: number): CommandBatchOutcome {
+  const sections = parseCommandBatchSections(output, marker);
+  const nonZeroSections = sections.filter((section) => section.exitCode !== 0);
+  const complete = sections.length === commandCount;
+  return {
+    sections,
+    nonZeroSections,
+    complete,
+    mixed: complete && nonZeroSections.length > 0 && nonZeroSections.length < sections.length
+  };
+}
+
+/**
+ * A non-zero wrapper exit is benign only when every framed failing command is benign.
+ * A missing or truncated section set cannot hide a real failure behind a successful prefix.
+ */
+export function commandBatchExitIsBenign(
+  output: string,
+  marker: string,
+  commandCount: number,
+  exitCode: number | null,
+  classifyCommand: (section: CommandBatchSection) => boolean
+): boolean {
+  if (exitCode === null || exitCode === 0) return false;
+  const outcome = commandBatchOutcome(output, marker, commandCount);
+  return outcome.complete && outcome.nonZeroSections.length > 0 &&
+    outcome.nonZeroSections.every(classifyCommand);
+}
+
+/** Describe mixed success without making the caller decode the wrapper's aggregate exit code. */
+export function commandBatchMixedNote(outcome: CommandBatchOutcome): string | null {
+  if (!outcome.mixed) return null;
+  const succeeded = outcome.sections.length - outcome.nonZeroSections.length;
+  return `Batch: ${outcome.nonZeroSections.map((section) => `command ${section.index} exited ${section.exitCode}`).join(', ')}; ` +
+    `the other ${succeeded === 1 ? 'command' : `${succeeded} commands`} exited 0. ` +
+    'The top-line exit code is the first non-zero one.';
+}
+
+/**
+ * Project section facts into the notes shown with an exec response. Recovery hints are scoped
+ * to framed failing commands so one later failure never recommends replaying earlier mutations.
+ */
+export function projectCommandBatchNotes(
+  outcome: CommandBatchOutcome,
+  options: {
+    benign: boolean;
+    commandFor: (section: CommandBatchSection) => string;
+    benignNote: (section: CommandBatchSection, command: string) => string;
+    recoveryNotes: (section: CommandBatchSection, command: string) => readonly string[];
+  }
+): string[] {
+  const notes = options.benign
+    ? outcome.nonZeroSections.map((section) =>
+        `Command ${section.index}: ${options.benignNote(section, options.commandFor(section))}`
+      )
+    : [];
+  const mixedNote = options.benign ? null : commandBatchMixedNote(outcome);
+  if (mixedNote) notes.unshift(mixedNote);
+  for (const section of outcome.nonZeroSections) {
+    notes.push(
+      ...options.recoveryNotes(section, options.commandFor(section)).map((note) => `Command ${section.index}: ${note}`)
+    );
+  }
+  return notes;
+}
+
 /**
  * Reads the sections back out of a batch result.
  *
