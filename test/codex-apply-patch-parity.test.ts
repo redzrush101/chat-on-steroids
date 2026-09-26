@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -11,8 +11,8 @@ import { TempDirPool } from './helpers.js';
 
 const tempDirs = new TempDirPool();
 
-async function tempRoot(): Promise<string> {
-  return tempDirs.create('clf-apply-patch-parity-');
+async function tempRoot(files: Record<string, string> = {}): Promise<string> {
+  return tempDirs.createWithFiles('clf-apply-patch-parity-', files);
 }
 
 describe('Codex apply_patch runtime parity', () => {
@@ -56,11 +56,9 @@ describe('Codex apply_patch runtime parity', () => {
   });
 
   it('records overwritten destination content when a move replaces an existing file', async () => {
-    const root = await tempRoot();
+    const root = await tempRoot({ 'source.txt': 'old\n', 'destination.txt': 'destination-before\n' });
     const source = path.join(root, 'source.txt');
     const destination = path.join(root, 'destination.txt');
-    await writeFile(source, 'old\n');
-    await writeFile(destination, 'destination-before\n');
 
     const result = await executeApplyPatch({
       cwd: root,
@@ -91,9 +89,8 @@ describe('Codex apply_patch runtime parity', () => {
   });
 
   it('refuses a move to the same file before write-then-remove can delete it', async () => {
-    const root = await tempRoot();
+    const root = await tempRoot({ 'source.txt': 'old\n' });
     const source = path.join(root, 'source.txt');
-    await writeFile(source, 'old\n');
     const patch = `*** Begin Patch
 *** Update File: source.txt
 *** Move to: ./source.txt
@@ -109,11 +106,9 @@ describe('Codex apply_patch runtime parity', () => {
   });
 
   it('preflights a later move destination before an earlier hunk can become a partial patch', async () => {
-    const root = await tempRoot();
+    const root = await tempRoot({ 'first.txt': 'before\n', 'source.txt': 'source\n' });
     const first = path.join(root, 'first.txt');
     const source = path.join(root, 'source.txt');
-    await writeFile(first, 'before\n');
-    await writeFile(source, 'source\n');
     await mkdir(path.join(root, 'directory-target'));
 
     const patch = `*** Begin Patch
@@ -138,9 +133,8 @@ describe('Codex apply_patch runtime parity', () => {
   });
 
   it('matches upstream fuzzy Unicode punctuation when patch context uses ASCII', async () => {
-    const root = await tempRoot();
+    const root = await tempRoot({ 'unicode.py': 'import asyncio  # local import – avoids top‑level dep\n' });
     const target = path.join(root, 'unicode.py');
-    await writeFile(target, 'import asyncio  # local import – avoids top‑level dep\n');
 
     const result = await executeApplyPatch({
       cwd: root,
@@ -157,9 +151,8 @@ describe('Codex apply_patch runtime parity', () => {
   });
 
   it('preserves mixed source line endings in preserve-line-endings mode', async () => {
-    const root = await tempRoot();
+    const root = await tempRoot({ 'mixed.txt': 'a\r\nb\nc\r' });
     const target = path.join(root, 'mixed.txt');
-    await writeFile(target, 'a\r\nb\nc\r');
 
     const result = await executeApplyPatch({
       cwd: root,
@@ -179,9 +172,8 @@ describe('Codex apply_patch runtime parity', () => {
   });
 
   it('inserts an empty-old-lines chunk at EOF with the historical trailing newline', async () => {
-    const root = await tempRoot();
+    const root = await tempRoot({ 'eof.txt': 'foo\nbar\nbaz\n' });
     const target = path.join(root, 'eof.txt');
-    await writeFile(target, 'foo\nbar\nbaz\n');
 
     const result = await executeApplyPatch({
       cwd: root,
@@ -195,12 +187,6 @@ describe('Codex apply_patch runtime parity', () => {
 
     expect(result.exitCode).toBe(0);
     await expect(readFile(target, 'utf8')).resolves.toBe('foo\nbar\nbaz\nquux\n');
-  });
-});
-
-describe('a second Update File hunk for a path already targeted', () => {
-  afterEach(async () => {
-    await tempDirs.cleanup();
   });
 
   /**
@@ -217,8 +203,7 @@ describe('a second Update File hunk for a path already targeted', () => {
   }
 
   it('applies both, where upstream refused the patch its own applier would have taken', async () => {
-    const root = await tempRoot();
-    await writeFile(path.join(root, 'sample.ts'), 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst z = 4;\n', 'utf8');
+    const root = await tempRoot({ 'sample.ts': 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst z = 4;\n' });
 
     const twoHeaders = await verifyThenApply(
       root,
@@ -241,8 +226,7 @@ describe('a second Update File hunk for a path already targeted', () => {
 
     // The form the model was required to write instead. Same result, which is the point: the
     // refusal was never protecting a difference in outcome.
-    const oneRoot = await tempRoot();
-    await writeFile(path.join(oneRoot, 'sample.ts'), 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst z = 4;\n', 'utf8');
+    const oneRoot = await tempRoot({ 'sample.ts': 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst z = 4;\n' });
     const oneHeader = await verifyThenApply(
       oneRoot,
       'sample.ts',
@@ -266,8 +250,7 @@ describe('a second Update File hunk for a path already targeted', () => {
     // which is earlier in the file than the first — is exactly the case a merge would break and
     // sequential application handles. The applier reads the file back between hunks; the verifier
     // now hands the same intermediate text to the next hunk instead.
-    const root = await tempRoot();
-    await writeFile(path.join(root, 'ordered.txt'), 'alpha\nbeta\ngamma\n', 'utf8');
+    const root = await tempRoot({ 'ordered.txt': 'alpha\nbeta\ngamma\n' });
 
     const content = await verifyThenApply(
       root,
@@ -290,8 +273,7 @@ describe('a second Update File hunk for a path already targeted', () => {
   });
 
   it('lets the second hunk edit what the first one wrote', async () => {
-    const root = await tempRoot();
-    await writeFile(path.join(root, 'chained.txt'), 'one\ntwo\n', 'utf8');
+    const root = await tempRoot({ 'chained.txt': 'one\ntwo\n' });
 
     const content = await verifyThenApply(
       root,
@@ -317,8 +299,7 @@ describe('a second Update File hunk for a path already targeted', () => {
   it('rewrites a file given as a delete followed by an add', async () => {
     // How the model spells "replace this document wholesale". Two recorded sessions lost a
     // rewritten doc to the duplicate-path refusal in exactly this shape.
-    const root = await tempRoot();
-    await writeFile(path.join(root, 'notes.md'), 'old heading\nold body\n', 'utf8');
+    const root = await tempRoot({ 'notes.md': 'old heading\nold body\n' });
 
     const content = await verifyThenApply(
       root,
@@ -401,8 +382,7 @@ describe('a second Update File hunk for a path already targeted', () => {
     ];
 
     for (const { what, patch, expected } of sequences) {
-      const root = await tempRoot();
-      await writeFile(path.join(root, 'sample.ts'), 'const a = 1;\n', 'utf8');
+      const root = await tempRoot({ 'sample.ts': 'const a = 1;\n' });
 
       let refusal = '';
       try {
@@ -421,8 +401,7 @@ describe('a second Update File hunk for a path already targeted', () => {
   });
 
   it('still refuses a repeat under a path the resolver rejects, before reading anything', async () => {
-    const root = await tempRoot();
-    await writeFile(path.join(root, 'sample.ts'), 'const a = 1;\n', 'utf8');
+    const root = await tempRoot({ 'sample.ts': 'const a = 1;\n' });
 
     await expect(
       verifyApplyPatchArgs(

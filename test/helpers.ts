@@ -26,6 +26,12 @@ export class TempDirPool {
     return dir;
   }
 
+  async createWithFiles(prefix: string, files: Record<string, string>): Promise<string> {
+    const dir = await this.create(prefix);
+    await writeTree(dir, files);
+    return dir;
+  }
+
   async cleanup(): Promise<void> {
     await Promise.all(this.dirs.splice(0).map(removeTempDir));
   }

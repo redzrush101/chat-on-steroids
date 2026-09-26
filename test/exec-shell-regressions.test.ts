@@ -11,10 +11,10 @@ import { TempDirPool } from './helpers.js';
 const tempDirs = new TempDirPool();
 afterEach(async () => tempDirs.cleanup());
 async function fixture() {
-  const dir = await tempDirs.create('cos-shell-regression-');
-  writeFileSync(join(dir, 'sample.txt'), 'history="older"\nLoad older\nnot a match\n');
-  writeFileSync(join(dir, 'second.txt'), 'not a match\n');
-  return dir;
+  return tempDirs.createWithFiles('cos-shell-regression-', {
+    'sample.txt': 'history="older"\nLoad older\nnot a match\n',
+    'second.txt': 'not a match\n'
+  });
 }
 
 describe('native shell argument and batch parity', () => {

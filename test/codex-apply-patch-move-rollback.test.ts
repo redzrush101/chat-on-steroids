@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -37,11 +37,12 @@ describe('apply_patch move rollback', () => {
   });
 
   it('restores an occupied destination when source deletion fails after the destination write', async () => {
-    const root = await tempDirs.create('clf-patch-move-rollback-');
+    const root = await tempDirs.createWithFiles('clf-patch-move-rollback-', {
+      'source.txt': 'source-before\n',
+      'destination.txt': 'destination-before\n'
+    });
     const source = path.join(root, 'source.txt');
     const destination = path.join(root, 'destination.txt');
-    await writeFile(source, 'source-before\n', 'utf8');
-    await writeFile(destination, 'destination-before\n', 'utf8');
     removeFailure.path = source;
 
     const result = await executeApplyPatch({
@@ -63,11 +64,12 @@ describe('apply_patch move rollback', () => {
   });
 
   it('does not overwrite a newer destination edit while rolling back a failed move', async () => {
-    const root = await tempDirs.create('clf-patch-move-rollback-race-');
+    const root = await tempDirs.createWithFiles('clf-patch-move-rollback-race-', {
+      'source.txt': 'source-before\n',
+      'destination.txt': 'destination-before\n'
+    });
     const source = path.join(root, 'source.txt');
     const destination = path.join(root, 'destination.txt');
-    await writeFile(source, 'source-before\n', 'utf8');
-    await writeFile(destination, 'destination-before\n', 'utf8');
     removeFailure.path = source;
     removeFailure.mutateDestination = destination;
     removeFailure.mutateContent = 'external-newer-edit\n';
