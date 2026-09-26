@@ -1,5 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -25,20 +24,20 @@ vi.mock('../src/main/codex/filesystem.js', async (importOriginal) => {
 });
 
 import { executeApplyPatch } from '../src/main/codex/apply-patch/index.js';
+import { TempDirPool } from './helpers.js';
 
-const roots: string[] = [];
+const tempDirs = new TempDirPool();
 
 describe('apply_patch move rollback', () => {
   afterEach(async () => {
     removeFailure.path = '';
     removeFailure.mutateDestination = '';
     removeFailure.mutateContent = '';
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await tempDirs.cleanup();
   });
 
   it('restores an occupied destination when source deletion fails after the destination write', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'clf-patch-move-rollback-'));
-    roots.push(root);
+    const root = await tempDirs.create('clf-patch-move-rollback-');
     const source = path.join(root, 'source.txt');
     const destination = path.join(root, 'destination.txt');
     await writeFile(source, 'source-before\n', 'utf8');
@@ -64,8 +63,7 @@ describe('apply_patch move rollback', () => {
   });
 
   it('does not overwrite a newer destination edit while rolling back a failed move', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'clf-patch-move-rollback-race-'));
-    roots.push(root);
+    const root = await tempDirs.create('clf-patch-move-rollback-race-');
     const source = path.join(root, 'source.txt');
     const destination = path.join(root, 'destination.txt');
     await writeFile(source, 'source-before\n', 'utf8');

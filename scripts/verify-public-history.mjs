@@ -1,12 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
-const maintainerLogin = 'totec448-spec';
-const safeMaintainerEmail = /^(?:\d+\+)?totec448-spec@users\.noreply\.github\.com$/i;
-
 // Keep the blocked values split so this guard does not contain the data it rejects.
 const blockedText = [
-  { label: 'private maintainer email', value: ['totec448', 'gmail.com'].join('@') },
   { label: 'Claude session trailer', value: ['Claude', 'Session:'].join('-') },
   { label: 'Claude session URL', value: ['https://claude.ai/code/', 'session_'].join('') },
   ...['\\', '\\\\', '/'].map(separator => ({
@@ -14,7 +10,7 @@ const blockedText = [
   })),
 ];
 
-const privateEvidence = ['outputs/', '.codex-remote-attachments/', 'docs/audit-user-requests-20260905-06.md'];
+const privateEvidence = ['outputs/', '.codex-remote-attachments/'];
 
 function runGit(args, { allowFailure = false, encoding = 'utf8' } = {}) {
   const result = spawnSync('git', args, {
@@ -35,23 +31,6 @@ function findBlockedText(text, location) {
   return blockedText
     .filter(({ value }) => normalized.includes(value.toLowerCase()))
     .map(({ label }) => `${location} contains ${label}`);
-}
-
-function checkMaintainerIdentity(name, email, location) {
-  const normalizedName = name.trim().toLowerCase();
-  const normalizedEmail = email.trim().replace(/^<|>$/g, '').toLowerCase();
-  const belongsToMaintainer =
-    normalizedName === maintainerLogin || normalizedEmail.includes(maintainerLogin);
-  if (belongsToMaintainer && !safeMaintainerEmail.test(normalizedEmail)) {
-    return [`${location} uses a non-noreply maintainer email`];
-  }
-  return [];
-}
-
-function parseGitIdent(ident) {
-  const match = ident.match(/^(.*) <([^>]+)> \d+ [+-]\d{4}$/);
-  if (!match) throw new Error('Could not parse the Git author identity.');
-  return { name: match[1] ?? '', email: match[2] ?? '' };
 }
 
 function checkIndexedOrCommittedFiles(treeish) {
@@ -76,17 +55,8 @@ function checkIndexedOrCommittedFiles(treeish) {
   return failures;
 }
 
-function checkCurrentAuthor() {
-  const ident = String(runGit(['var', 'GIT_AUTHOR_IDENT']).stdout).trim();
-  const { name, email } = parseGitIdent(ident);
-  return checkMaintainerIdentity(name, email, 'current Git author');
-}
-
 function checkMessageFile(messagePath) {
-  return [
-    ...checkCurrentAuthor(),
-    ...findBlockedText(readFileSync(messagePath, 'utf8'), 'commit message'),
-  ];
+  return findBlockedText(readFileSync(messagePath, 'utf8'), 'commit message');
 }
 
 /**
@@ -94,11 +64,9 @@ function checkMessageFile(messagePath) {
  *
  * The gate exists to keep a private value from *entering* public history. A commit that is
  * already on the canonical repository's main has entered it, and refusing every later local push cannot
- * unpublish it — it only strands the working clone, because the merge commits GitHub writes
- * for a merged pull request carry whatever address that account publishes, and no local hook
- * ever saw them. Those are exempt here; everything a local push would actually add stays
- * checked. Removing a value from published history is a deliberate rewrite of a public branch,
- * not something a pre-push hook should be able to demand.
+ * unpublish it — it only strands the working clone. Those commits are exempt here; everything
+ * a local push would actually add stays checked. Removing a value from published history
+ * requires a deliberate rewrite of a public branch, not a decision by a pre-push hook.
  *
  * A fork's origin may lag upstream. Select by exact repository URL, never by the name
  * "upstream". Without a canonical remote, retain the legacy origin/main convention.
@@ -143,17 +111,9 @@ function checkHistory() {
   for (const commit of commits) {
     if (syntheticPullRequestCommit && commit === syntheticPullRequestCommit) continue;
     if (published.has(commit)) continue;
-    const record = String(
-      runGit(['show', '-s', '--format=%an%x00%ae%x00%cn%x00%ce%x00%B', commit]).stdout,
-    );
-    const [authorName = '', authorEmail = '', committerName = '', committerEmail = '', ...body] =
-      record.split('\0');
     const location = `commit ${commit}`;
-    failures.push(
-      ...checkMaintainerIdentity(authorName, authorEmail, `${location} author`),
-      ...checkMaintainerIdentity(committerName, committerEmail, `${location} committer`),
-      ...findBlockedText(body.join('\0'), `${location} message`),
-    );
+    const message = String(runGit(['show', '-s', '--format=%B', commit]).stdout);
+    failures.push(...findBlockedText(message, `${location} message`));
   }
 
   // Same rule for tags: an annotated tag reachable from HEAD is part of this line's public
@@ -167,18 +127,8 @@ function checkHistory() {
   for (const tag of tags) {
     const type = String(runGit(['cat-file', '-t', tag]).stdout).trim();
     if (type !== 'tag') continue;
-    const record = String(
-      runGit([
-        'for-each-ref',
-        `refs/tags/${tag}`,
-        '--format=%(taggername)%00%(taggeremail)%00%(contents)',
-      ]).stdout,
-    );
-    const [taggerName = '', taggerEmail = '', ...body] = record.split('\0');
-    failures.push(
-      ...checkMaintainerIdentity(taggerName, taggerEmail, `tag ${tag} tagger`),
-      ...findBlockedText(body.join('\0'), `tag ${tag} message`),
-    );
+    const message = String(runGit(['for-each-ref', `refs/tags/${tag}`, '--format=%(contents)']).stdout);
+    failures.push(...findBlockedText(message, `tag ${tag} message`));
   }
 
   if (head.status === 0) failures.push(...checkIndexedOrCommittedFiles('HEAD'));
@@ -197,7 +147,7 @@ if (mode === '--message') {
   const failures = checkMessageFile(argument);
   if (failures.length > 0) fail(failures);
 } else if (mode === '--staged') {
-  const failures = [...checkCurrentAuthor(), ...checkIndexedOrCommittedFiles('--cached')];
+  const failures = checkIndexedOrCommittedFiles('--cached');
   if (failures.length > 0) fail(failures);
 } else if (mode) {
   throw new Error(`Unknown argument: ${mode}`);

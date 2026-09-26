@@ -17,7 +17,8 @@
  * protected-resource metadata request properly and never emits a non-JSON body.
  */
 
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { safeEqual } from '../safe-equal.js';
 import { createInboundTiming, formatInboundTiming, requestIdFromHeader, withInboundRequestId } from './inbound.js';
 import http from 'node:http';
 import type { Socket } from 'node:net';
@@ -62,13 +63,6 @@ export interface McpEndpoint {
 
 /** RFC 9728 §3.1: the metadata for a resource at /x lives at /.well-known/…/x. */
 const PRM_PREFIX = '/.well-known/oauth-protected-resource';
-
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf8');
-  const bufB = Buffer.from(b, 'utf8');
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
 
 /**
  * Everything that is not the MCP endpoint answers with JSON.

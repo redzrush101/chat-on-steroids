@@ -1,6 +1,5 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { deflateSync } from 'node:zlib';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,13 +9,12 @@ import {
   viewImage
 } from '../src/main/codex/view-image.js';
 import { readFile as readCodexFile } from '../src/main/codex/filesystem.js';
+import { TempDirPool } from './helpers.js';
 
-const roots: string[] = [];
+const tempDirs = new TempDirPool();
 
 async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), 'clf-view-image-parity-'));
-  roots.push(root);
-  return root;
+  return tempDirs.create('clf-view-image-parity-');
 }
 
 function pngWithoutImageData(): Buffer {
@@ -244,7 +242,7 @@ describe('Codex view_image runtime parity', () => {
   });
 
   afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await tempDirs.cleanup();
   });
 
   it('lets image callers impose a smaller hard read ceiling than the generic 512 MiB primitive', async () => {

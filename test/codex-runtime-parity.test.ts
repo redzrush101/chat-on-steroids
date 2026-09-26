@@ -1,5 +1,4 @@
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -26,6 +25,7 @@ import {
 } from '../src/main/codex/shell.js';
 import { terminateProcessTree } from '../src/main/exec.js';
 import { composeCommandBatch, parseCommandBatchSections } from '../src/main/codex/command-batch.js';
+import { TempDirPool } from './helpers.js';
 
 const truncationPolicy = { kind: 'tokens' as const, tokens: 10_000 };
 
@@ -57,11 +57,11 @@ async function waitForFile(file: string): Promise<void> {
 
 describe('Codex unified exec runtime parity', () => {
   const managers: UnifiedExecProcessManager[] = [];
-  const tempRoots: string[] = [];
+  const tempDirs = new TempDirPool();
 
   afterEach(async () => {
     await Promise.all(managers.splice(0).map((item) => item.terminateAllProcesses()));
-    await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await tempDirs.cleanup();
   });
 
   /**
@@ -115,8 +115,7 @@ describe('Codex unified exec runtime parity', () => {
   });
 
   it('resolves a relative explicit shell path against the command cwd, not the app cwd', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'clf-shell-cwd-'));
-    tempRoots.push(root);
+    const root = await tempDirs.create('clf-shell-cwd-');
     const tools = path.join(root, 'tools');
     await mkdir(tools, { recursive: true });
     const shellFile = path.join(tools, process.platform === 'win32' ? 'powershell.exe' : 'bash');
@@ -130,8 +129,7 @@ describe('Codex unified exec runtime parity', () => {
   });
 
   it.runIf(process.platform !== 'win32')('requires the POSIX executable bit for an explicit shell', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'clf-shell-executable-'));
-    tempRoots.push(root);
+    const root = await tempDirs.create('clf-shell-executable-');
     const shellFile = path.join(root, 'bash');
     await writeFile(shellFile, '#!/bin/sh\n', { encoding: 'utf8', mode: 0o644 });
     expect(getShellByModelProvidedPath(shellFile)).toBeNull();
@@ -370,8 +368,7 @@ describe('Codex unified exec runtime parity', () => {
   });
 
   it.runIf(process.platform === 'win32')('Ctrl-C on a Windows pipe session terminates the whole process tree', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'clf-pipe-interrupt-parity-'));
-    tempRoots.push(root);
+    const root = await tempDirs.create('clf-pipe-interrupt-parity-');
     const ready = path.join(root, 'grandchild.pid');
     const grandchildScript = 'setInterval(() => {}, 1000);';
     const parentScript = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const child=spawn(${JSON.stringify(process.execPath)}, ['-e', ${JSON.stringify(grandchildScript)}], {stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(ready)}, String(child.pid)); setInterval(() => {}, 1000);`;
@@ -420,8 +417,7 @@ describe('Codex unified exec runtime parity', () => {
   });
 
   it.runIf(process.platform !== 'win32')('Ctrl-C on a POSIX pipe session terminates the whole process group', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'clf-posix-pipe-interrupt-parity-'));
-    tempRoots.push(root);
+    const root = await tempDirs.create('clf-posix-pipe-interrupt-parity-');
     const ready = path.join(root, 'grandchild.pid');
     const survived = path.join(root, 'grandchild-survived.txt');
     const grandchildScript = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(survived)}, 'survived'), 900); setInterval(() => {}, 1000);`;
@@ -467,8 +463,7 @@ describe('Codex unified exec runtime parity', () => {
   });
 
   it.runIf(process.platform !== 'win32')('terminating a POSIX PTY session kills descendants in its process group', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'clf-posix-pty-tree-parity-'));
-    tempRoots.push(root);
+    const root = await tempDirs.create('clf-posix-pty-tree-parity-');
     const ready = path.join(root, 'grandchild.pid');
     const survived = path.join(root, 'grandchild-survived.txt');
     const grandchildScript = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(survived)}, 'survived'), 900); setInterval(() => {}, 1000);`;

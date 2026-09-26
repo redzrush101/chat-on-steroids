@@ -1,5 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -8,18 +7,17 @@ import {
   parsePatch,
   verifyApplyPatchArgs
 } from '../src/main/codex/apply-patch/index.js';
+import { TempDirPool } from './helpers.js';
 
-const roots: string[] = [];
+const tempDirs = new TempDirPool();
 
 async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), 'clf-apply-patch-parity-'));
-  roots.push(root);
-  return root;
+  return tempDirs.create('clf-apply-patch-parity-');
 }
 
 describe('Codex apply_patch runtime parity', () => {
   afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await tempDirs.cleanup();
   });
 
   it('parses the current optional Environment ID preamble', () => {
@@ -202,7 +200,7 @@ describe('Codex apply_patch runtime parity', () => {
 
 describe('a second Update File hunk for a path already targeted', () => {
   afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await tempDirs.cleanup();
   });
 
   /**

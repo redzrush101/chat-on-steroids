@@ -43,7 +43,8 @@ import { pendingBrowserInputs, claimBrowserInput, acknowledgeBrowserInput, bindB
  * submit an action, read a local file, run a process or change a permission here.
  */
 
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { safeEqual } from './safe-equal.js';
 import http from 'node:http';
 import type { BridgeStatus, CompanionDiagnostics, CompanionPageDiagnostics, CompanionTabDiagnostics, CompanionTraceEntry } from '../shared/types.js';
 import { recoveryBusyMs } from '../shared/recovery.js';
@@ -819,13 +820,6 @@ function originOf(req: http.IncomingMessage): {
   return { ok: false, origin: null };
 }
 
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf8');
-  const bufB = Buffer.from(b, 'utf8');
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
-
 /**
  * Records which extension build is talking, and complains once if it is the wrong one.
  *
@@ -914,6 +908,22 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
  */
 function tooLarge(res: http.ServerResponse, origin: string | null): void {
   json(res, 413, { error: 'body_too_large' }, origin);
+}
+
+/** Parse a POST body and send the route's existing error response on failure. */
+async function routeBody(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  origin: string | null,
+  respond: typeof json = json
+): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false }> {
+  try {
+    return { ok: true, body: await readBody(req) as Record<string, unknown> };
+  } catch (err) {
+    if ((err as Error).message === 'body_too_large') tooLarge(res, origin);
+    else respond(res, 400, { error: 'bad_request' }, origin);
+    return { ok: false };
+  }
 }
 
 function rateLimited(): boolean {
@@ -2064,13 +2074,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (route === '/correlations' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return json(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const id = conversationId(body['conversationId']);
     if (!id) return json(res, 400, { error: 'bad_conversation_id' }, origin);
     const calls = parseCallEvidence(body['calls'], true).filter((call) => call.requestId !== null);
@@ -2120,13 +2126,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }, origin);
   }
   if (route === '/events' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return json(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const id = conversationId(body['conversationId']);
     if (!id) return json(res, 400, { error: 'bad_conversation_id' }, origin);
     // Normal worker binding happens on the exact command ACK. `/events` is the lost-ACK
@@ -2254,13 +2256,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (route === '/closed' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return json(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const id = conversationId(body['conversationId']);
     if (id) {
       // Preserve the page's last exact turn verdict before closeConversation removes its live
@@ -2776,13 +2774,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    * were".
    */
   if (route === '/compact' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return json(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const checkpointToken = typeof body['token'] === 'string' ? body['token'] : '';
     const checkpoint = continuationByToken(checkpointToken);
     if (checkpoint?.automatic &&
@@ -3230,13 +3224,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    * the same draft rather than a second message into somebody's conversation.
    */
   if (route === '/goal/draft' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return goalJson(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin, goalJson);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const id = conversationId(body['conversationId']);
     const turnId = typeof body['turnId'] === 'string' ? body['turnId'].slice(0, 200) : '';
     const terminalRequired = body['terminalRequired'] === true;
@@ -3386,13 +3376,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (route === '/goal/ack' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return goalJson(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin, goalJson);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const id = conversationId(body['conversationId']);
     if (!id) return goalJson(res, 400, { error: 'bad_conversation_id' }, origin);
     const token = typeof body['token'] === 'string' ? body['token'] : '';
@@ -3437,13 +3423,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    * finish line the user has just deleted.
    */
   if (route === '/goal/objective' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return goalJson(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin, goalJson);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const id = conversationId(body['conversationId']);
     if (!id) return goalJson(res, 400, { error: 'bad_conversation_id' }, origin);
     const text = typeof body['text'] === 'string' ? body['text'] : '';
@@ -3469,13 +3451,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    * which instruction this opening is being written under.
    */
   if (route === '/goal/open' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return goalJson(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin, goalJson);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const text = typeof body['text'] === 'string' ? body['text'] : '';
     if (!text.trim()) return goalJson(res, 400, { error: 'no_objective' }, origin);
     const opening =
@@ -3525,13 +3503,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (route === '/settings' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return json(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const auto = typeof body['autoCompact'] === 'boolean' ? (body['autoCompact'] as boolean) : null;
     const goal = typeof body['goal'] === 'boolean' ? (body['goal'] as boolean) : null;
     const loop = typeof body['loop'] === 'boolean' ? (body['loop'] as boolean) : null;
@@ -3686,13 +3660,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // no command text and acquires no owner/lease: it is only a freshness fence for recovery
   // markers that can outlive the command they once referred to.
   if (route === '/commands/revivals/pending' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return json(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const rawEntries = Array.isArray(body['entries']) ? body['entries'] : null;
     if (!rawEntries || rawEntries.length > 100) {
       return json(res, 400, { error: 'bad_revival_entries' }, origin);
@@ -3722,13 +3692,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // token as everything else — it is a correlation marker, which is why a leaked URL or a
   // synced history entry is worth nothing on its own.
   if (route === '/commands/redeem' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return json(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     tidyCommands();
     const wanted = typeof body['id'] === 'string' ? body['id'] : '';
     const client = typeof body['client'] === 'string' ? body['client'].slice(0, 64) : '';
@@ -3864,13 +3830,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (route === '/commands/ack' && req.method === 'POST') {
-    let body: Record<string, unknown>;
-    try {
-      body = (await readBody(req)) as Record<string, unknown>;
-    } catch (err) {
-      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
-      return json(res, 400, { error: 'bad_request' }, origin);
-    }
+    const parsed = await routeBody(req, res, origin);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const id = typeof body['id'] === 'string' ? body['id'] : '';
     // A protocol-1 extension sends no status and only ever acknowledges a success, so
     // a missing status still means "sent".

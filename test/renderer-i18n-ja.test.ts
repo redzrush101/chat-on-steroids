@@ -1,30 +1,17 @@
-import { readFileSync } from 'node:fs';
-import { JSDOM } from 'jsdom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import es from '../src/renderer/locales/es.json';
 import zhCN from '../src/renderer/locales/zh-CN.json';
 import zhTW from '../src/renderer/locales/zh-TW.json';
 import ja from '../src/renderer/locales/ja.json';
+import { expectCatalogIncludes, expectCatalogTranslations, setupLocaleDom } from './renderer-i18n-helpers.js';
 
 const names = { en: 'English', es: 'Español', 'zh-CN': '简体中文', 'zh-TW': '繁體中文', ja: '日本語', tr: 'Türkçe', fr: 'Français' } as const;
-let dom: JSDOM;
-beforeEach(() => {
-  vi.resetModules();
-  dom = new JSDOM(readFileSync('src/renderer/index.html', 'utf8'), { url: 'https://local.test/' });
-  Object.assign(globalThis, { window: dom.window, document: dom.window.document,
-    Node: dom.window.Node, Element: dom.window.Element, HTMLElement: dom.window.HTMLElement });
-});
-afterEach(() => { vi.restoreAllMocks(); dom.window.close(); });
+const localeDom = setupLocaleDom('elements', true);
 
 describe('Japanese app interface and compact setup languages', () => {
   it('covers the union of existing catalogs, including newer notices, with all arguments preserved', () => {
-    const sources = [...new Set([es, zhCN, zhTW].flatMap(catalog => Object.keys(catalog)))].sort();
-    expect(sources.filter(source => !Object.hasOwn(ja, source))).toEqual([]);
-    for (const [source, translation] of Object.entries(ja)) {
-      expect(translation.trim(), source).not.toBe('');
-      const args = (text: string) => (text.match(/\{\d+\}/g) ?? []).sort();
-      expect(args(translation), source).toEqual(args(source));
-    }
+    expectCatalogIncludes(ja, [es, zhCN, zhTW]);
+    expectCatalogTranslations(ja);
   });
 
   it('restores Japanese and synchronizes the flags, settings and saved preference in both directions', async () => {
@@ -40,7 +27,7 @@ describe('Japanese app interface and compact setup languages', () => {
     expect(select.selectedOptions[0]!.textContent).toBe('日本語');
     expect(button.getAttribute('aria-pressed')).toBe('true');
     select.value = 'en';
-    select.dispatchEvent(new dom.window.Event('change'));
+    select.dispatchEvent(new localeDom.dom.window.Event('change'));
     expect(currentLanguage()).toBe('en');
     expect(button.getAttribute('aria-pressed')).toBe('false');
     button.click();
@@ -124,8 +111,8 @@ describe('Japanese app interface and compact setup languages', () => {
     window.localStorage.setItem('cos.ui.language', 'invalid');
     expect((await import('../src/renderer/i18n.js')).currentLanguage()).toBe('en');
     vi.resetModules();
-    vi.spyOn(dom.window.Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable'); });
-    vi.spyOn(dom.window.Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); });
+    vi.spyOn(localeDom.dom.window.Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable'); });
+    vi.spyOn(localeDom.dom.window.Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); });
     const { initLanguage, currentLanguage, t } = await import('../src/renderer/i18n.js');
     initLanguage();
     document.querySelector<HTMLButtonElement>('[data-language="ja"]')!.click();

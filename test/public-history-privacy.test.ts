@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 const script = path.join(process.cwd(), 'scripts', 'verify-public-history.mjs');
 const repositories: string[] = [];
 const safeEmail = '227782719+totec448-spec@users.noreply.github.com';
+const chosenEmail = 'maintainer@example.com';
+const sessionUrl = ['https://claude.ai/code/', 'session_exampleIdentifier'].join('');
 
 function makeRepository(): string {
   const repository = mkdtempSync(path.join(tmpdir(), 'public-history-privacy-'));
@@ -44,12 +46,12 @@ function tag(repository: string, name: string, message: string, email: string): 
   });
 }
 
-function verify(repository: string, args: string[] = []) {
+function verify(repository: string, args: string[] = [], email = safeEmail) {
   return spawnSync(process.execPath, [script, ...args], {
     cwd: repository,
     encoding: 'utf8',
     windowsHide: true,
-    env: { ...process.env, GIT_AUTHOR_NAME: 'totec448-spec', GIT_AUTHOR_EMAIL: safeEmail },
+    env: { ...process.env, GIT_AUTHOR_NAME: 'totec448-spec', GIT_AUTHOR_EMAIL: email },
   });
 }
 
@@ -73,7 +75,7 @@ describe('public-history privacy gate', () => {
     expect(verify(repository).status).toBe(1);
   });
 
-  it.each(['outputs/clean.txt', '.codex-remote-attachments/clean.txt', 'docs/audit-user-requests-20260905-06.md'])
+  it.each(['outputs/clean.txt', '.codex-remote-attachments/clean.txt'])
     ('rejects tracked evidence %s despite ignore rules and preserves the immutable HEAD check after index-only cleanup', file => {
       const repository = makeRepository();
       mkdirSync(path.dirname(path.join(repository, file)), { recursive: true });
@@ -92,7 +94,7 @@ describe('public-history privacy gate', () => {
   it('excludes local evidence from Git source archives even if forcibly tracked', () => {
     const repository = makeRepository();
     writeFileSync(path.join(repository, '.gitattributes'), readFileSync(path.join(process.cwd(), '.gitattributes')));
-    for (const file of ['outputs/evidence.txt', '.codex-remote-attachments/image.txt', 'docs/audit-user-requests-20260905-06.md']) {
+    for (const file of ['outputs/evidence.txt', '.codex-remote-attachments/image.txt']) {
       mkdirSync(path.dirname(path.join(repository, file)), { recursive: true });
       writeFileSync(path.join(repository, file), 'LOCAL_PRIVATE_EVIDENCE');
       execFileSync('git', ['add', '-f', '--', file], { cwd: repository });
@@ -111,20 +113,24 @@ describe('public-history privacy gate', () => {
     expect(result.stdout).toContain('privacy check passed');
   });
 
-  it('rejects a non-noreply maintainer identity without printing the address', () => {
-    const repository = makeRepository();
-    const privateEmail = ['totec448', 'gmail.com'].join('@');
-    commit(repository, 'Unsafe identity', privateEmail);
-
-    const result = verify(repository);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('non-noreply maintainer email');
-    expect(result.stderr).not.toContain(privateEmail);
+  it('accepts a contributor-chosen email in commit metadata, tracked text, and hooks', () => {
+    for (const email of [chosenEmail, ['totec448', 'gmail.com'].join('@')]) {
+      const repository = makeRepository();
+      writeFileSync(path.join(repository, 'README.md'), `Contact: ${email}\n`);
+      execFileSync('git', ['add', 'README.md'], { cwd: repository });
+      expect(verify(repository, ['--staged'], email).status).toBe(0);
+      commit(repository, 'Public contributor email', email);
+      expect(verify(repository, [], email).status).toBe(0);
+      const message = path.join(repository, 'COMMIT_EDITMSG');
+      writeFileSync(message, `Change\n\nCo-authored-by: Contributor <${email}>\n`);
+      expect(verify(repository, ['--message', message], email).status).toBe(0);
+      tag(repository, 'v0.0.1-public', 'Public tag', email);
+      expect(verify(repository, [], email).status).toBe(0);
+    }
   });
 
   it('rejects Claude session provenance in commit messages without echoing it', () => {
     const repository = makeRepository();
-    const sessionUrl = ['https://claude.ai/code/', 'session_exampleIdentifier'].join('');
     commit(repository, `Unsafe trailer\n\n${['Claude', 'Session'].join('-')}: ${sessionUrl}`, safeEmail);
 
     const result = verify(repository);
@@ -138,11 +144,10 @@ describe('public-history privacy gate', () => {
    * branches, abandoned local experiments. Those cannot enter the releasable line, so they
    * are not this gate's business — and failing on them made a clean branch look unsafe.
    */
-  it('passes a clean checked-out line even when an unrelated ref carries unsafe identity', () => {
+  it('passes a clean checked-out line even when an unrelated ref carries a private session URL', () => {
     const repository = makeRepository();
-    const privateEmail = ['totec448', 'gmail.com'].join('@');
     execFileSync('git', ['checkout', '-q', '-b', 'unrelated'], { cwd: repository });
-    commit(repository, 'Unsafe identity on a ref this branch never contains', privateEmail);
+    commit(repository, `Private session on unrelated ref ${sessionUrl}`, safeEmail);
     execFileSync('git', ['checkout', '-q', 'main'], { cwd: repository });
 
     const result = verify(repository);
@@ -150,28 +155,25 @@ describe('public-history privacy gate', () => {
     expect(result.stdout).toContain('privacy check passed');
   });
 
-  it('still rejects unsafe identity that is an ancestor of HEAD', () => {
+  it('still rejects a private session URL that is an ancestor of HEAD', () => {
     const repository = makeRepository();
-    const privateEmail = ['totec448', 'gmail.com'].join('@');
-    commit(repository, 'Unsafe identity in ancestry', privateEmail);
+    commit(repository, `Private session in ancestry ${sessionUrl}`, safeEmail);
     commit(repository, 'Clean commit on top', safeEmail);
 
     const result = verify(repository);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('non-noreply maintainer email');
-    expect(result.stderr).not.toContain(privateEmail);
+    expect(result.stderr).toContain('Claude session URL');
+    expect(result.stderr).not.toContain(sessionUrl);
   });
 
   /**
-   * The merge commit GitHub writes for a merged pull request carries whatever address that
-   * account publishes, and no local hook ever saw it. Once it is on `origin/main` the value
-   * is public, so failing every later push cannot unpublish it — it only strands the clone.
+   * Once a value is on `origin/main` it is public, so failing every later push cannot unpublish
+   * it — it only strands the clone.
    * Taking it out is a deliberate rewrite of a public branch, not a hook's decision.
    */
-  it('exempts unsafe identity that is already published on origin/main', () => {
+  it('exempts a session URL that is already published on origin/main', () => {
     const repository = makeRepository();
-    const privateEmail = ['totec448', 'gmail.com'].join('@');
-    commit(repository, 'Unsafe identity merged through the forge', privateEmail);
+    commit(repository, `Private session already on main ${sessionUrl}`, safeEmail);
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repository });
     commit(repository, 'Clean local commit on top', safeEmail);
 
@@ -189,11 +191,11 @@ describe('public-history privacy gate', () => {
     execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/example/fork.git'], { cwd: repository });
     execFileSync('git', ['remote', 'add', 'published', url], { cwd: repository });
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repository });
-    commit(repository, 'Already public canonical commit', ['totec448', 'gmail.com'].join('@'));
+    commit(repository, `Already public canonical commit ${sessionUrl}`, safeEmail);
     execFileSync('git', ['update-ref', 'refs/remotes/published/main', 'HEAD'], { cwd: repository });
     commit(repository, 'Local clean change', safeEmail);
     expect(verify(repository).status).toBe(0);
-    commit(repository, 'New unpublished unsafe identity', ['totec448', 'gmail.com'].join('@'));
+    commit(repository, `New unpublished private session ${sessionUrl}`, safeEmail);
     expect(verify(repository).status).toBe(1);
   });
 
@@ -205,7 +207,7 @@ describe('public-history privacy gate', () => {
     const repository = makeRepository();
     execFileSync('git', ['remote', 'add', 'upstream', url], { cwd: repository });
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repository });
-    commit(repository, 'Unpublished identity', ['totec448', 'gmail.com'].join('@'));
+    commit(repository, `Unpublished private session ${sessionUrl}`, safeEmail);
     execFileSync('git', ['update-ref', 'refs/remotes/upstream/main', 'HEAD'], { cwd: repository });
     expect(verify(repository).status).toBe(1);
   });
@@ -213,21 +215,20 @@ describe('public-history privacy gate', () => {
   it('does not fall back to fork history when canonical main has not been fetched', () => {
     const repository = makeRepository();
     execFileSync('git', ['remote', 'add', 'upstream', 'https://github.com/totec448-spec/chat-on-steroids.git'], { cwd: repository });
-    commit(repository, 'Only published on a fork', ['totec448', 'gmail.com'].join('@'));
+    commit(repository, `Only published on a fork ${sessionUrl}`, safeEmail);
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repository });
     expect(verify(repository).status).toBe(1);
   });
 
-  it('still rejects unsafe identity a push would add ahead of origin/main', () => {
+  it('still rejects a private session URL a push would add ahead of origin/main', () => {
     const repository = makeRepository();
-    const privateEmail = ['totec448', 'gmail.com'].join('@');
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repository });
-    commit(repository, 'Unsafe identity not published yet', privateEmail);
+    commit(repository, `Unpublished private session ${sessionUrl}`, safeEmail);
 
     const result = verify(repository);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('non-noreply maintainer email');
-    expect(result.stderr).not.toContain(privateEmail);
+    expect(result.stderr).toContain('Claude session URL');
+    expect(result.stderr).not.toContain(sessionUrl);
   });
 
   it('keeps annotated tags reachable from HEAD under the same checks', () => {

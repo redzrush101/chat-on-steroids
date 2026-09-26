@@ -6,8 +6,8 @@ export default defineConfig({
     environment: 'node',
     // Real filesystem, real child processes and a real HTTP server, so the
     // defaults are too tight.
-    testTimeout: 30_000,
-    hookTimeout: 30_000,
+    testTimeout: 15_000,
+    hookTimeout: 15_000,
     env: {
       // Never let a test bind — or worse, fall through to — the shipped bridge range.
       // The developer's own installed app is usually listening on 8765 while the suite

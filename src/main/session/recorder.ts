@@ -1909,6 +1909,52 @@ function observationTitle(observations: readonly ChatObservation[]): string | un
   return title || observedUserTitle(first);
 }
 
+type ExtensionMessageBase = {
+  time: number;
+  source: 'extension';
+  authoredAt?: number;
+  turnId?: string;
+  agent?: string;
+};
+
+async function extensionUserMessageEvent(
+  sessionId: string,
+  item: ChatObservation,
+  base: ExtensionMessageBase
+) {
+  return {
+    ...base,
+    kind: 'user_message' as const,
+    message: await storeText(sessionId, item.text ?? '', MAX_USER_MESSAGE_CHARS),
+    ...(item.attachments?.length ? { attachments: item.attachments } : {}),
+    ...(item.reaction !== undefined ? { reaction: item.reaction } : {}),
+    messageId: item.messageId!
+  };
+}
+
+async function extensionAssistantMessageEvent(
+  sessionId: string,
+  item: ChatObservation,
+  base: ExtensionMessageBase,
+  state: 'streaming' | 'final',
+  goalEligible = false
+) {
+  return {
+    ...base,
+    kind: 'assistant_message' as const,
+    // Keep normal handoff-sized answers inline in the local transcript.
+    message: await storeText(sessionId, item.text ?? '', 256_000),
+    ...(item.renderedHtml
+      ? { renderedHtml: await storeText(sessionId, item.renderedHtml, 120_000) }
+      : {}),
+    messageId: item.messageId!,
+    state,
+    final: state === 'final',
+    ...(item.providerMessageId ? { providerMessageId: item.providerMessageId } : {}),
+    ...(goalEligible && state === 'final' ? { goalEligible: true } : {})
+  };
+}
+
 /** The one ownership ingress used by both /correlations and transcript batches.
  * Exact proof needs a committed session/lineage, but must never wait behind that chat's
  * streamed text, HTML or image writes. Session initialization already has its own owner. */
@@ -2006,32 +2052,14 @@ async function recordSupersededMessages(
     if (item.kind === 'user_message') {
       written = await upsertMessageEvent(
         sessionId,
-        {
-          ...base,
-          kind: 'user_message',
-          message: await storeText(sessionId, item.text ?? '', MAX_USER_MESSAGE_CHARS),
-          ...(item.attachments?.length ? { attachments: item.attachments } : {}),
-          ...(item.reaction !== undefined ? { reaction: item.reaction } : {}),
-          messageId: item.messageId
-        },
+        await extensionUserMessageEvent(sessionId, item, base),
         { preferTime: item.authoredTime === true, work: false }
       );
     } else if (item.kind === 'assistant_message') {
       const state = item.state ?? (item.final === true ? 'final' : 'streaming');
       written = await upsertMessageEvent(
         sessionId,
-        {
-          ...base,
-          kind: 'assistant_message',
-          message: await storeText(sessionId, item.text ?? '', 256_000),
-          ...(item.renderedHtml
-            ? { renderedHtml: await storeText(sessionId, item.renderedHtml, 120_000) }
-            : {}),
-          messageId: item.messageId,
-          state,
-          ...(item.providerMessageId ? { providerMessageId: item.providerMessageId } : {}),
-          final: state === 'final'
-        },
+        await extensionAssistantMessageEvent(sessionId, item, base, state),
         { preferTime: item.authoredTime === true }
       );
     } else if (item.kind === 'native_image') {
@@ -2117,14 +2145,9 @@ async function recordChatObservationsNow(
         // A message with no ChatGPT identity cannot participate in the canonical transcript.
         // Dropping it is safer than minting a local id that can collide on reload.
         if (!item.messageId) continue;
-        const written = await upsertMessageEvent(sessionId, {
-          ...base,
-          kind: 'user_message',
-          message: await storeText(sessionId, item.text ?? '', MAX_USER_MESSAGE_CHARS),
-          ...(item.attachments?.length ? { attachments: item.attachments } : {}),
-          ...(item.reaction !== undefined ? { reaction: item.reaction } : {}),
-          messageId: item.messageId
-        }, { preferTime: item.authoredTime === true, work: item.authoredNow === true });
+        const written = await upsertMessageEvent(sessionId,
+          await extensionUserMessageEvent(sessionId, item, base),
+          { preferTime: item.authoredTime === true, work: item.authoredNow === true });
         if (!written.changed) continue;
         if (item.authoredNow === true) {
           activity.meaningful = true; activity.at = Math.max(activity.at ?? 0, item.time);
@@ -2163,21 +2186,9 @@ async function recordChatObservationsNow(
           uncertainTurnStartedAt !== null &&
           item.time >= uncertainTurnStartedAt;
         const goalEligible = item.goalEligible === true || recoveredGoalEligible;
-        const written = await upsertMessageEvent(sessionId, {
-          ...base,
-          kind: 'assistant_message',
-          // Keep normal 15k–20k-token handoff-style answers inline rather than making the
-          // local transcript itself look truncated while the continuation carries more.
-          message: await storeText(sessionId, item.text ?? '', 256_000),
-          ...(item.renderedHtml
-            ? { renderedHtml: await storeText(sessionId, item.renderedHtml, 120_000) }
-            : {}),
-          messageId: item.messageId,
-          state,
-          final: state === 'final',
-          ...(item.providerMessageId ? { providerMessageId: item.providerMessageId } : {}),
-          ...(goalEligible && state === 'final' ? { goalEligible: true } : {})
-        }, { preferTime: item.authoredTime === true, work: item.activeNow === true });
+        const written = await upsertMessageEvent(sessionId,
+          await extensionAssistantMessageEvent(sessionId, item, base, state, goalEligible),
+          { preferTime: item.authoredTime === true, work: item.activeNow === true });
         const canonicalTurn = written.event.turnId;
         // A stopped partial answer stays streaming in history. Re-observing its
         // DOM after restart cannot renew work, nor can an old message borrow a

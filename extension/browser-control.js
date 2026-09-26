@@ -336,63 +336,75 @@ export function createBrowserControl(chrome, transport, protectedTab = () => fal
     const vk = named?.[1] || key.toUpperCase().charCodeAt(0);
     return { key:actual,code,windowsVirtualKeyCode:vk,modifiers,...(!(modifiers & 7) && (actual.length === 1 || key === 'Enter') ? { text:key === 'Enter' ? '\r' : actual } : {}) };
   }
-  async function action(state,args,command) {
-    const a = args.action;
-    if (a === 'dialog') {
-      if (typeof args.accept !== 'boolean' || !state.dialog) error('BROWSER_DIALOG_REQUIRED: inspect pending dialog and specify accept.');
-      await input(state,'Page.handleJavaScriptDialog',{ accept:args.accept,promptText:args.text || '' },command);
-    } else if (a === 'key') {
-      const key = keyEvents(args.key);
-      if (args.ref) {
-        await authorize(command);
-        await page(state,'focus',{ref:args.ref,frameId:state.refFrames?.get(args.ref),keyTarget:true},command);
-      }
-      await input(state,'Input.dispatchKeyEvent',{ type:'keyDown',...key },command);
-      const { text:_text,...up } = key;
-      // Releasing the key has the same exact tab custody even if keyDown navigated it.
-      try {
-        if (args.holdMs) await new Promise(resolve => setTimeout(resolve,Math.min(2000,Math.max(0,args.holdMs))));
-      } finally { await send(state,'Input.dispatchKeyEvent',{ type:'keyUp',...up }); }
-    } else if (a === 'fill' || a === 'type') {
-      if (typeof args.text !== 'string' || !args.ref) error('BROWSER_TEXT_TARGET_REQUIRED: pass text and an editable ref.');
+  async function dialogAction(state, args, command) {
+    if (typeof args.accept !== 'boolean' || !state.dialog) error('BROWSER_DIALOG_REQUIRED: inspect pending dialog and specify accept.');
+    await input(state,'Page.handleJavaScriptDialog',{ accept:args.accept,promptText:args.text || '' },command);
+  }
+  async function keyAction(state, args, command) {
+    const key = keyEvents(args.key);
+    if (args.ref) {
       await authorize(command);
-      await page(state,'focus',{ref:args.ref,frameId:state.refFrames?.get(args.ref),replace:a === 'fill'},command);
-      if (a === 'fill' && !args.text) {
-        await input(state,'Input.dispatchKeyEvent',{type:'keyDown',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8},command);
-        await send(state,'Input.dispatchKeyEvent',{type:'keyUp',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8});
-      } else await input(state,'Input.insertText',{text:args.text},command);
-    } else if (a === 'select') {
-      if (!args.ref || !Array.isArray(args.values)) error('BROWSER_SELECT_REQUIRED: pass ref and values.');
-      await authorize(command); await currentTab(state,command);
-      await page(state,'select',{ref:args.ref,frameId:state.refFrames?.get(args.ref),values:args.values},command);
-    } else {
-      const from = await point(state,args,command);
-      if (a === 'scroll') {
-        await input(state,'Input.dispatchMouseEvent',{type:'mouseWheel',...from,deltaX:args.deltaX || 0,deltaY:args.deltaY || 0},command);
-      } else {
-        await input(state,'Input.dispatchMouseEvent',{type:'mouseMoved',...from},command);
-        if (a === 'click') {
-          const button = args.button || 'left';
-          for (let count = 1; count <= (args.clickCount || 1); count++) {
-            await input(state,'Input.dispatchMouseEvent',{type:'mousePressed',...from,button,clickCount:count},command);
-            await send(state,'Input.dispatchMouseEvent',{type:'mouseReleased',...from,button,clickCount:count});
-          }
-        } else if (a === 'drag') {
-          const to = await point(state,{ref:args.toRef,x:args.toX,y:args.toY,screenshotId:args.screenshotId},command);
-          if (to.__sessionId !== from.__sessionId) error('BROWSER_DRAG_FRAME: use one viewport screenshot for a drag across frame widgets.');
-          // Resolving the destination may scroll. Require a stable viewport for both ends.
-          const checkedFrom = await point(state,{...args,noScroll:true},command);
-          if (checkedFrom.x !== from.x || checkedFrom.y !== from.y) error('BROWSER_DRAG_MOVED: choose endpoints in one viewport screenshot.');
-          await input(state,'Input.dispatchMouseEvent',{type:'mousePressed',...from,button:'left',clickCount:1},command);
-          try {
-            for (let step = 1; step <= 12; step++) await input(state,'Input.dispatchMouseEvent',{type:'mouseMoved',...from,x:from.x+(to.x-from.x)*step/12,y:from.y+(to.y-from.y)*step/12,button:'left',buttons:1},command);
-          } finally { await send(state,'Input.dispatchMouseEvent',{type:'mouseReleased',...to,button:'left',clickCount:1}).catch(() => {}); }
-        } else if (a !== 'hover') error('BROWSER_ACTION_UNKNOWN');
-      }
+      await page(state,'focus',{ref:args.ref,frameId:state.refFrames?.get(args.ref),keyTarget:true},command);
     }
+    await input(state,'Input.dispatchKeyEvent',{ type:'keyDown',...key },command);
+    const { text:_text,...up } = key;
+    // Releasing the key has the same exact tab custody even if keyDown navigated it.
+    try {
+      if (args.holdMs) await new Promise(resolve => setTimeout(resolve,Math.min(2000,Math.max(0,args.holdMs))));
+    } finally { await send(state,'Input.dispatchKeyEvent',{ type:'keyUp',...up }); }
+  }
+  async function textAction(state, args, command) {
+    if (typeof args.text !== 'string' || !args.ref) error('BROWSER_TEXT_TARGET_REQUIRED: pass text and an editable ref.');
+    await authorize(command);
+    await page(state,'focus',{ref:args.ref,frameId:state.refFrames?.get(args.ref),replace:args.action === 'fill'},command);
+    if (args.action === 'fill' && !args.text) {
+      await input(state,'Input.dispatchKeyEvent',{type:'keyDown',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8},command);
+      await send(state,'Input.dispatchKeyEvent',{type:'keyUp',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8});
+    } else await input(state,'Input.insertText',{text:args.text},command);
+  }
+  async function selectAction(state, args, command) {
+    if (!args.ref || !Array.isArray(args.values)) error('BROWSER_SELECT_REQUIRED: pass ref and values.');
+    await authorize(command); await currentTab(state,command);
+    await page(state,'select',{ref:args.ref,frameId:state.refFrames?.get(args.ref),values:args.values},command);
+  }
+  async function pointerAction(state, args, command) {
+    const from = await point(state,args,command);
+    if (args.action === 'scroll') {
+      await input(state,'Input.dispatchMouseEvent',{type:'mouseWheel',...from,deltaX:args.deltaX || 0,deltaY:args.deltaY || 0},command);
+    } else {
+      await input(state,'Input.dispatchMouseEvent',{type:'mouseMoved',...from},command);
+      if (args.action === 'click') {
+        const button = args.button || 'left';
+        for (let count = 1; count <= (args.clickCount || 1); count++) {
+          await input(state,'Input.dispatchMouseEvent',{type:'mousePressed',...from,button,clickCount:count},command);
+          await send(state,'Input.dispatchMouseEvent',{type:'mouseReleased',...from,button,clickCount:count});
+        }
+      } else if (args.action === 'drag') {
+        const to = await point(state,{ref:args.toRef,x:args.toX,y:args.toY,screenshotId:args.screenshotId},command);
+        if (to.__sessionId !== from.__sessionId) error('BROWSER_DRAG_FRAME: use one viewport screenshot for a drag across frame widgets.');
+        // Resolving the destination may scroll. Require a stable viewport for both ends.
+        const checkedFrom = await point(state,{...args,noScroll:true},command);
+        if (checkedFrom.x !== from.x || checkedFrom.y !== from.y) error('BROWSER_DRAG_MOVED: choose endpoints in one viewport screenshot.');
+        await input(state,'Input.dispatchMouseEvent',{type:'mousePressed',...from,button:'left',clickCount:1},command);
+        try {
+          for (let step = 1; step <= 12; step++) await input(state,'Input.dispatchMouseEvent',{type:'mouseMoved',...from,x:from.x+(to.x-from.x)*step/12,y:from.y+(to.y-from.y)*step/12,button:'left',buttons:1},command);
+        } finally { await send(state,'Input.dispatchMouseEvent',{type:'mouseReleased',...to,button:'left',clickCount:1}).catch(() => {}); }
+      } else if (args.action !== 'hover') error('BROWSER_ACTION_UNKNOWN');
+    }
+  }
+  async function action(state,args,command) {
+    const handler = Object.hasOwn(actionHandlers, args.action) ? actionHandlers[args.action] : pointerAction;
+    await handler(state,args,command);
     state.screenshot = null;
     return { tabId:handle(state.tabId),pageId:state.pageId,accepted:true,message:'Input dispatched; observe the page to verify the effect.' };
   }
+  const actionHandlers = Object.assign(Object.create(null), {
+    dialog: dialogAction,
+    key: keyAction,
+    fill: textAction,
+    type: textAction,
+    select: selectAction
+  });
   async function screenshot(state,args,command) {
     const pageId = state.pageId;
     const metrics = await send(state,'Page.getLayoutMetrics');
@@ -472,54 +484,58 @@ export function createBrowserControl(chrome, transport, protectedTab = () => fal
       frameId: `document:${captured.documentId}`, inspectionOnly: true,
       message: 'DOM inspection only; no action refs were created. Attach an eligible tab for browser input.' } };
   }
+  async function listTabs(args, command) {
+    const list = await chrome.tabs.query({});
+    const matched=list.filter(t=>(/^https?:/.test(t.url || t.pendingUrl || '') || t.url === 'about:blank')&&(!args.filter || `${t.title} ${t.url} ${t.pendingUrl || ''}`.toLowerCase().includes(args.filter.toLowerCase())));
+    const values=[];let size=0;
+    for(const tab of matched.slice(args.offset || 0,(args.offset || 0)+(args.limit || 100))) {
+      const attached=owns(tabs.get(tab.id),command),claimed=tabs.has(tab.id),protectedPage=protectedTab(tab.id,tab.url,command.conversationId);
+      const navigating=!tab.url || !!tab.pendingUrl && tab.pendingUrl!==tab.url;
+      const value={tabId:handle(tab.id),title:cut(tab.title,300),url:cut(tab.url,2000),urlTruncated:(tab.url?.length || 0)>2000,active:tab.active,pinned:tab.pinned,
+        pendingUrl:tab.pendingUrl?cut(tab.pendingUrl,2000):undefined,pendingUrlTruncated:(tab.pendingUrl?.length || 0)>2000,status:tab.status || 'unknown',
+        owned:attached,claimed,protected:protectedPage,access:{
+          snapshot:navigating?'loading':attached?'interactive':tab.url==='about:blank'?'attach-required':'inspect',
+          input:protectedPage?'protected':claimed&&!attached?'other-owner':!policy.write?'disabled':navigating?'loading':attached?'available':'attach-required'
+        }};
+      size+=JSON.stringify(value).length;if(size>24000)break;values.push(value);
+    }
+    const nextOffset=(args.offset || 0)+values.length;
+    return {value:{browserId,tabs:values,total:matched.length,truncated:nextOffset<matched.length,nextOffset:nextOffset<matched.length?nextOffset:null,
+      guidance:'Use browser_snapshot on this Desktop connector to inspect an existing HTTP(S) tab, including protected or foreign-owned tabs. access.input describes interaction separately. External browser plugins use separate tabs and handles.'}};
+  }
+  async function createTab(args, command) {
+    const url = pageURL(args.url || 'about:blank');
+    if (tabs.size >= 32) error('BROWSER_TAB_LIMIT: release an unused attachment before opening another tab.');
+    await authorize(command);
+    const tab = await chrome.tabs.create({url,active:false});
+    // Creation is already accepted. Preserve that receipt even when attachment fails.
+    // In particular, an unavailable debugger must not strand the requested URL on blank.
+    try {
+      await waitForCreatedDocument(tab.id,url,command);
+      await authorize(command);
+      const value = await attach(tab.id,command);
+      return {value:{...value,created:true,navigationRequested:url,message:'Snapshot this tab to inspect the current destination.'}};
+    } catch (cause) {
+      return {value:{tabId:handle(tab.id),created:true,attached:false,navigationRequested:url,attachmentError:cut(cause?.message || cause,1000),
+        message:'The tab was created and its requested navigation started; attachment did not complete. Do not repeat new. Inspect this tab if it still exists; attach the same tab only when interaction is needed and available.'}};
+    }
+  }
+  async function executeTabs(command) {
+    const {args} = command;
+    if (args.action === 'list') return listTabs(args,command);
+    if (args.action === 'attach') return {value:await attach(args.tabId,command)};
+    if (args.action === 'new') return createTab(args,command);
+    const state = await owned(command);
+    if (args.action === 'release') { await release(state); return {value:{tabId:handle(state.tabId),released:true}}; }
+    if (args.action === 'close') { await authorize(command); await currentTab(state,command); await chrome.tabs.remove(state.tabId); await release(state); return {value:{tabId:handle(state.tabId),closed:true}}; }
+    error('BROWSER_TABS_ACTION_UNKNOWN');
+  }
   async function execute(command) {
     if (command.epoch !== epoch || command.expiresAt <= Date.now()) error('BROWSER_EXPIRED: no operation dispatched.');
     const {tool,args} = command;
     const writes = ['browser_action','browser_navigate','browser_evaluate'].includes(tool) || tool === 'browser_tabs' && ['new','close'].includes(args.action);
     if (!(writes ? policy.write : policy.read)) error('BROWSER_PERMISSION_REVOKED');
-    if (tool === 'browser_tabs') {
-      if (args.action === 'list') {
-        const list = await chrome.tabs.query({});
-        const matched=list.filter(t=>(/^https?:/.test(t.url || t.pendingUrl || '') || t.url === 'about:blank')&&(!args.filter || `${t.title} ${t.url} ${t.pendingUrl || ''}`.toLowerCase().includes(args.filter.toLowerCase())));
-        const values=[];let size=0;
-        for(const tab of matched.slice(args.offset || 0,(args.offset || 0)+(args.limit || 100))) {
-          const attached=owns(tabs.get(tab.id),command),claimed=tabs.has(tab.id),protectedPage=protectedTab(tab.id,tab.url,command.conversationId);
-          const navigating=!tab.url || !!tab.pendingUrl && tab.pendingUrl!==tab.url;
-          const value={tabId:handle(tab.id),title:cut(tab.title,300),url:cut(tab.url,2000),urlTruncated:(tab.url?.length || 0)>2000,active:tab.active,pinned:tab.pinned,
-            pendingUrl:tab.pendingUrl?cut(tab.pendingUrl,2000):undefined,pendingUrlTruncated:(tab.pendingUrl?.length || 0)>2000,status:tab.status || 'unknown',
-            owned:attached,claimed,protected:protectedPage,access:{
-              snapshot:navigating?'loading':attached?'interactive':tab.url==='about:blank'?'attach-required':'inspect',
-              input:protectedPage?'protected':claimed&&!attached?'other-owner':!policy.write?'disabled':navigating?'loading':attached?'available':'attach-required'
-            }};
-          size+=JSON.stringify(value).length;if(size>24000)break;values.push(value);
-        }
-        const nextOffset=(args.offset || 0)+values.length;
-        return {value:{browserId,tabs:values,total:matched.length,truncated:nextOffset<matched.length,nextOffset:nextOffset<matched.length?nextOffset:null,
-          guidance:'Use browser_snapshot on this Desktop connector to inspect an existing HTTP(S) tab, including protected or foreign-owned tabs. access.input describes interaction separately. External browser plugins use separate tabs and handles.'}};
-      }
-      if (args.action === 'attach') return {value:await attach(args.tabId,command)};
-      if (args.action === 'new') {
-        const url = pageURL(args.url || 'about:blank');
-        if (tabs.size >= 32) error('BROWSER_TAB_LIMIT: release an unused attachment before opening another tab.');
-        await authorize(command);
-        const tab = await chrome.tabs.create({url,active:false});
-        // Creation is already accepted. Preserve that receipt even when attachment fails.
-        // In particular, an unavailable debugger must not strand the requested URL on blank.
-        try {
-          await waitForCreatedDocument(tab.id,url,command);
-          await authorize(command);
-          const value = await attach(tab.id,command);
-          return {value:{...value,created:true,navigationRequested:url,message:'Snapshot this tab to inspect the current destination.'}};
-        } catch (cause) {
-          return {value:{tabId:handle(tab.id),created:true,attached:false,navigationRequested:url,attachmentError:cut(cause?.message || cause,1000),
-            message:'The tab was created and its requested navigation started; attachment did not complete. Do not repeat new. Inspect this tab if it still exists; attach the same tab only when interaction is needed and available.'}};
-        }
-      }
-      const state = await owned(command);
-      if (args.action === 'release') { await release(state); return {value:{tabId:handle(state.tabId),released:true}}; }
-      if (args.action === 'close') { await authorize(command); await currentTab(state,command); await chrome.tabs.remove(state.tabId); await release(state); return {value:{tabId:handle(state.tabId),closed:true}}; }
-      error('BROWSER_TABS_ACTION_UNKNOWN');
-    }
+    if (tool === 'browser_tabs') return executeTabs(command);
     const existing = tabs.get(args.tabId);
     if (tool === 'browser_snapshot' && (args.mode === 'inspect' || !owns(existing, command))) return inspect(command);
     const state = await owned(command);
@@ -623,14 +639,18 @@ export function createBrowserControl(chrome, transport, protectedTab = () => fal
     tabs.delete(source.tabId); await save();
     await cleanup(removeIndicator(state));
   }
+  async function deliverReceipt() {
+    if (!receipt) return true;
+    const ack = await transport('/browser-control',{method:'POST',body:JSON.stringify({action:'result',browserId,...receipt})});
+    if (!ack.ok && ack.status !== 409) return false;
+    receipt = null;
+    await save();
+    return true;
+  }
   async function pumpOnce() {
     await ready();
     const enabled = await chrome.permissions.contains({permissions:['debugger','tabs']});
-    if (receipt) {
-      const ack = await transport('/browser-control',{method:'POST',body:JSON.stringify({action:'result',browserId,...receipt})});
-      if (!ack.ok && ack.status !== 409) return;
-      receipt = null; await save();
-    }
+    if (!await deliverReceipt()) return;
     const poll = await transport('/browser-control',{method:'POST',body:JSON.stringify({action:'poll',browserId,name:/Edg\//.test(navigator.userAgent) ? 'Edge' : 'Chrome / Chromium',enabled})});
     if (!poll.ok) { if (poll.status === 401 || poll.status === 426) await revoke(); return; }
     policy = poll.data.policy;
@@ -645,9 +665,7 @@ export function createBrowserControl(chrome, transport, protectedTab = () => fal
       catch (cause) { result = {error:cut(cause?.message || cause,1500)}; }
       if (new TextEncoder().encode(JSON.stringify(result)).length > 1_800_000) result = {error:'BROWSER_RESULT_TOO_LARGE: operation may have completed; inspect before repeating.'};
       receipt = {id:request,epoch,result}; await save();
-      const ack = await transport('/browser-control',{method:'POST',body:JSON.stringify({action:'result',browserId,...receipt})});
-      if (!ack.ok && ack.status !== 409) return;
-      receipt = null; await save();
+      if (!await deliverReceipt()) return;
     }
   }
   function pump() {

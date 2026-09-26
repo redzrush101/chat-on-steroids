@@ -1,18 +1,17 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { bindBundledRipgrep, execRecoveryHints, nonZeroExitIsBenign, repairPowerShellQuoting } from '../src/main/exec-hints.js';
 import { deriveExecArgs, getShellByModelProvidedPath, withPosixPathPrefix } from '../src/main/codex/shell.js';
 import { composeCommandBatch, parseCommandBatchSections } from '../src/main/codex/command-batch.js';
 import { locateRipgrep } from '../src/main/ripgrep.js';
+import { TempDirPool } from './helpers.js';
 
-const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'cos-shell-regression-'));
-  dirs.push(dir);
+const tempDirs = new TempDirPool();
+afterEach(async () => tempDirs.cleanup());
+async function fixture() {
+  const dir = await tempDirs.create('cos-shell-regression-');
   writeFileSync(join(dir, 'sample.txt'), 'history="older"\nLoad older\nnot a match\n');
   writeFileSync(join(dir, 'second.txt'), 'not a match\n');
   return dir;
@@ -23,8 +22,8 @@ describe('native shell argument and batch parity', () => {
   // includes bash/sh. Windows exercises both PS generations when installed.
   for (const name of process.platform === 'win32' ? ['powershell', 'pwsh'] : ['bash', 'zsh', 'sh']) {
     const shell = getShellByModelProvidedPath(name);
-    it.skipIf(!shell)(`${name}: preserves quotes followed by spaces and adjacent paths`, () => {
-      const cwd = fixture();
+    it.skipIf(!shell)(`${name}: preserves quotes followed by spaces and adjacent paths`, async () => {
+      const cwd = await fixture();
       const original = String.raw`rg -n "history=\"older\"|Load older" sample.txt second.txt`;
       const repaired = repairPowerShellQuoting(original, shell!.shellType);
       if (shell!.shellType !== 'powershell') expect(repaired).toEqual({ cmd: original, notes: [] });
@@ -42,8 +41,8 @@ describe('native shell argument and batch parity', () => {
 });
 
 const zsh = getShellByModelProvidedPath('zsh');
-it.skipIf(!zsh)('restores bundled command discovery after a login profile rewrites PATH', () => {
-  const dir = fixture();
+it.skipIf(!zsh)('restores bundled command discovery after a login profile rewrites PATH', async () => {
+  const dir = await fixture();
   const bundled = join(dir, "app's bundled tools");
   mkdirSync(bundled);
   writeFileSync(join(bundled, 'rg'), '#!/bin/sh\nprintf bundled-rg\n', { mode: 0o755 });
@@ -61,10 +60,10 @@ it('leaves other shell languages and missing bundled paths unchanged', () => {
   expect(withPosixPathPrefix('command -v rg', 'sh', null)).toBe('command -v rg');
 });
 
-it.skipIf(!zsh)('preserves native zsh unmatched-glob failure instead of reporting no search matches', () => {
+it.skipIf(!zsh)('preserves native zsh unmatched-glob failure instead of reporting no search matches', async () => {
   const command = bindBundledRipgrep('rg needle missing/*.ts', 'zsh', locateRipgrep());
   const args = deriveExecArgs(zsh!, command, false);
-  const result = spawnSync(args[0]!, args.slice(1), { cwd: fixture(), encoding: 'utf8', windowsHide: true });
+  const result = spawnSync(args[0]!, args.slice(1), { cwd: await fixture(), encoding: 'utf8', windowsHide: true });
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(1);
   const output = result.stdout + result.stderr;

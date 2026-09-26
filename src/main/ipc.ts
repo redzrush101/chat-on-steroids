@@ -1,6 +1,6 @@
 import { registerWorkspaceTerminalIpc } from './workspace-terminal-ipc.js';
 import { applyLoginStartup, supportsLoginStartup } from './window-lifecycle.js';
-import { appearanceSchema } from './appearance-schema.js';
+import { uiSettingSchemas } from './ui-settings-schema.js';
 import { mergeAppearance } from '../shared/appearance.js';
 import { prepareSessionPrompt, prepareSkillFollowup } from './session/prompt.js';
 import { listSkills } from './skills.js';
@@ -41,7 +41,6 @@ import { z } from 'zod';
 import {
   CAPABILITIES,
   browserExtensionRequired,
-  CHAT_BROWSERS,
   GOAL_MODES,
   GOAL_PROVIDERS,
   GOAL_REASONING_LEVELS,
@@ -50,7 +49,7 @@ import {
 } from '../shared/types.js';
 import { MAX_GOAL_SYSTEM_PROMPT_CHARS } from '../shared/goal.js';
 import { applySettings, connect, disconnect, getStatus, onStatusChange } from './connection.js';
-import { effectiveCapabilities, getConfig, updateConfig, MAX_MCP_INSTRUCTIONS_CHARS, browserBridgePortSchema } from './config.js';
+import { effectiveCapabilities, getConfig, updateConfig, MAX_MCP_INSTRUCTIONS_CHARS } from './config.js';
 import { bridgePortSelection } from './bridge-ports.js';
 import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
@@ -150,24 +149,24 @@ const settingsPatch = z.object({
     binaryPath: z.string().max(4096)
   }),
   ui: z.object({
-    appearance: appearanceSchema.optional(),
-    autoContinue: z.boolean().optional(),
-    chatBrowser: z.enum(CHAT_BROWSERS).optional(),
-    developerMode: z.boolean().optional(),
-    finishTool: z.boolean().optional(),
-    planBackend: z.enum(['chatgpt', 'api']).optional(),
-    finishAction: z.enum(['notify', 'goal']).optional(),
-    finishLeadMinutes: z.number().int().min(3).max(5).optional(),
-    backgroundChats: z.boolean().optional(),
-    browserBridgePort: browserBridgePortSchema.optional(),
-    browserOnly: z.boolean().optional(),
-    autoRefreshPlugins: z.boolean().optional(),
-    tabsToKeepOpen: z.number().int().min(1).max(50).optional(),
-    minimizeToTray: z.boolean(),
-    autoConnect: z.boolean(),
-    startAtLogin: z.boolean().optional(),
-    privacyScreenshots: z.boolean(),
-    theme: z.enum(['light', 'dark'])
+    appearance: uiSettingSchemas.appearance.optional(),
+    autoContinue: uiSettingSchemas.autoContinue.optional(),
+    chatBrowser: uiSettingSchemas.chatBrowser.optional(),
+    developerMode: uiSettingSchemas.developerMode.optional(),
+    finishTool: uiSettingSchemas.finishTool.optional(),
+    planBackend: uiSettingSchemas.planBackend.optional(),
+    finishAction: uiSettingSchemas.finishAction.optional(),
+    finishLeadMinutes: uiSettingSchemas.finishLeadMinutes.optional(),
+    backgroundChats: uiSettingSchemas.backgroundChats.optional(),
+    browserBridgePort: uiSettingSchemas.browserBridgePort.optional(),
+    browserOnly: uiSettingSchemas.browserOnly.optional(),
+    autoRefreshPlugins: uiSettingSchemas.autoRefreshPlugins.optional(),
+    tabsToKeepOpen: uiSettingSchemas.tabsToKeepOpen.optional(),
+    minimizeToTray: uiSettingSchemas.minimizeToTray,
+    autoConnect: uiSettingSchemas.autoConnect,
+    startAtLogin: uiSettingSchemas.startAtLogin.optional(),
+    privacyScreenshots: uiSettingSchemas.privacyScreenshots,
+    theme: uiSettingSchemas.theme
   }),
   sessions: z.object({
     record: z.boolean(),

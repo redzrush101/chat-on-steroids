@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import { afterEach, expect, it, vi } from 'vitest';
 import zhTW from '../src/renderer/locales/zh-TW.json';
 import zhCN from '../src/renderer/locales/zh-CN.json';
+import { expectCatalogTranslations } from './renderer-i18n-helpers.js';
 
 let dom: JSDOM | undefined;
 afterEach(() => { dom?.window.close(); vi.resetModules(); });
@@ -15,11 +16,7 @@ it('covers every current source key with matching placeholders and no duplicate 
     const keys = [...source.matchAll(/^\s{2}("(?:[^"\\]|\\.)*")\s*:/gm)].map(match => JSON.parse(match[1]!));
     expect(keys.length).toBe(new Set(keys).size);
   }
-  for (const [source, translation] of Object.entries(zhTW)) {
-    expect(translation.trim(), source).not.toBe('');
-    const args = (text: string) => (text.match(/\{\d+\}/g) ?? []).sort();
-    expect(args(translation), source).toEqual(args(source));
-  }
+  expectCatalogTranslations(zhTW);
 });
 it('restores Traditional Chinese and switches all languages without changing authored content', async () => {
   dom = new JSDOM(readFileSync('src/renderer/index.html', 'utf8'), { url: 'https://local.test/' });

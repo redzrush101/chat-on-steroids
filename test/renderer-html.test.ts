@@ -19,7 +19,7 @@ beforeAll(async () => {
     Element: dom.window.Element,
     Node: dom.window.Node
   });
-  ({ renderedMessage, renderedMarkdown } = await import('../src/renderer/chat.js'));
+  ({ renderedMessage, renderedMarkdown } = await import('../src/renderer/message-rendering.js'));
 });
 
 afterAll(() => {

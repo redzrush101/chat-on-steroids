@@ -16,6 +16,21 @@ export async function removeTempDir(dir: string): Promise<void> {
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 5 });
 }
 
+/** Owns temporary roots for a test scope and removes them together during teardown. */
+export class TempDirPool {
+  private readonly dirs: string[] = [];
+
+  async create(prefix: string): Promise<string> {
+    const dir = await makeTempDir(prefix);
+    this.dirs.push(dir);
+    return dir;
+  }
+
+  async cleanup(): Promise<void> {
+    await Promise.all(this.dirs.splice(0).map(removeTempDir));
+  }
+}
+
 /** Writes a map of "a/b.txt" -> contents, creating parent folders as needed. */
 export async function writeTree(root: string, files: Record<string, string>): Promise<void> {
   for (const [rel, content] of Object.entries(files)) {
