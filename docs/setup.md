@@ -63,7 +63,7 @@ You choose the approved folders and capabilities. File tools enforce those roots
 
 History is stored locally, with recording on and 30-day retention by default. Credentials use the operating system's secure storage. Review permissions before connecting: fresh installs enable Core capabilities and two workers; Windows also starts with Desktop permissions enabled.
 
-[Security policy](../SECURITY.md) · [Tool reference](tool-surface.md) · [Architecture](../AGENTS.md)
+[Security policy](../SECURITY.md) · [Tool reference](tool-surface.md) · [Build and test](build.md)
 
 ## Sessions, workers and Astra
 
