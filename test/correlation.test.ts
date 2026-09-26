@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TempDirPool } from './helpers.js';
 import { flushDurable, initDurableStore, resetDurableForTests, writeDurableNow } from '../src/main/durable.js';
 import {
   appendEvent,
@@ -20,8 +18,35 @@ import {
 } from '../src/main/session/correlation.js';
 
 describe('request correlation ownership', () => {
+  const tempDirs = new TempDirPool();
+
+  async function withDurableStore(
+    prefix: string,
+    withSessions: boolean,
+    run: (dir: string) => Promise<void>
+  ): Promise<void> {
+    const dir = await tempDirs.create(prefix);
+    try {
+      resetDurableForTests();
+      if (withSessions) resetSessionStoreForTests();
+      initDurableStore(dir);
+      if (withSessions) initSessionStore(dir);
+      await run(dir);
+    } finally {
+      resetCorrelationRegistryForTests();
+      if (withSessions) {
+        resetSessionStoreForTests();
+        unsetSessionRootForTests();
+      }
+      resetDurableForTests();
+    }
+  }
+
   beforeEach(() => resetCorrelationRegistryForTests());
-  afterEach(() => vi.useRealTimers());
+  afterEach(async () => {
+    vi.useRealTimers();
+    await tempDirs.cleanup();
+  });
 
   it('spends grace once per request while accepting late exact evidence', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
@@ -225,11 +250,8 @@ describe('request correlation ownership', () => {
     expect(requestCorrelation('wfr_fill_0')).toBeNull();
   });
 
-  it('restores proven request ownership from durable state after an app restart', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-'));
-    try {
-      resetDurableForTests();
-      initDurableStore(dir);
+  it('restores proven request ownership from durable state after an app restart', () =>
+    withDurableStore('clf-correlation-', false, async () => {
       const requestId = 'wfr_survives_restart';
       observeRequestCorrelation({
         requestId,
@@ -247,12 +269,8 @@ describe('request correlation ownership', () => {
       await restoreRequestCorrelations();
       expect(requestCorrelation(requestId)?.conversationId).toBe('conv-durable');
       expect(requestCorrelation(requestId)?.sessionId).toBe('session-durable');
-    } finally {
-      resetCorrelationRegistryForTests();
-      resetDurableForTests();
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
+    })
+  );
 
   /**
    * ChatGPT publishes `metadata.request_id` before the `api_tool` message that names the tool,
@@ -262,11 +280,8 @@ describe('request correlation ownership', () => {
    * launch by a validity check stricter than the registry's own answer, taking the proven owner
    * of a workflow whose calls could still be arriving.
    */
-  it('restores an owner proved by a request id ChatGPT had not yet given a tool name', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-untooled-'));
-    try {
-      resetDurableForTests();
-      initDurableStore(dir);
+  it('restores an owner proved by a request id ChatGPT had not yet given a tool name', () =>
+    withDurableStore('clf-correlation-untooled-', false, async () => {
       const requestId = 'f0f00012-1111-4111-8111-111111111111';
       observeRequestCorrelation({
         requestId,
@@ -283,20 +298,11 @@ describe('request correlation ownership', () => {
 
       expect(requestCorrelation(requestId)?.conversationId).toBe('conv-bare-request-id');
       expect(requestCorrelation(requestId)?.sessionId).toBe('2026-01-01-00000028');
-    } finally {
-      resetCorrelationRegistryForTests();
-      resetDurableForTests();
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
+    })
+  );
 
-  it('migrates older proven owners and forgets the sticky conflicts those versions wrote', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-v3-conflict-'));
-    try {
-      resetDurableForTests();
-      resetSessionStoreForTests();
-      initDurableStore(dir);
-      initSessionStore(dir);
+  it('migrates older proven owners and forgets the sticky conflicts those versions wrote', () =>
+    withDurableStore('clf-correlation-v3-conflict-', true, async () => {
       await writeDurableNow('request-correlations', {
         version: 3,
         entries: [
@@ -336,23 +342,11 @@ describe('request correlation ownership', () => {
           observedAt: 200
         })
       ).toBe('stored');
-    } finally {
-      resetCorrelationRegistryForTests();
-      resetSessionStoreForTests();
-      unsetSessionRootForTests();
-      resetDurableForTests();
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
+    })
+  );
 
-  it('rebuilds the first 1.8.2 owner index from already-attributed session history', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-migrate-'));
-    try {
-      resetDurableForTests();
-      resetSessionStoreForTests();
-      initDurableStore(dir);
-      initSessionStore(dir);
-
+  it('rebuilds the first 1.8.2 owner index from already-attributed session history', () =>
+    withDurableStore('clf-correlation-migrate-', true, async () => {
       const session = await createSession({ title: 'old attributed history', conversationId: 'conv-history' });
       await appendEvent(session.id, {
         time: 200,
@@ -385,22 +379,11 @@ describe('request correlation ownership', () => {
       await restoreRequestCorrelations();
       expect(requestCorrelation('wfr_history')?.conversationId).toBe('conv-history');
       expect(requestCorrelation('wfr_history')?.sessionId).toBe(session.id);
-    } finally {
-      resetCorrelationRegistryForTests();
-      resetSessionStoreForTests();
-      unsetSessionRootForTests();
-      resetDurableForTests();
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
+    })
+  );
 
-  it('reconciles a valid stale snapshot with newer durable attributed history', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-stale-'));
-    try {
-      resetDurableForTests();
-      resetSessionStoreForTests();
-      initDurableStore(dir);
-      initSessionStore(dir);
+  it('reconciles a valid stale snapshot with newer durable attributed history', () =>
+    withDurableStore('clf-correlation-stale-', true, async dir => {
       const conversationId = 'conv-stale-reconcile';
       const session = await createSession({ title: 'stale correlation snapshot', conversationId });
       const toolCall = (callId: string, requestId: string, time: number) => ({
@@ -451,12 +434,6 @@ describe('request correlation ownership', () => {
       await restoreRequestCorrelations();
       expect(requestCorrelation('wfr_old_snapshot')?.conversationId).toBe(conversationId);
       expect(requestCorrelation('wfr_new_history')?.conversationId).toBe(conversationId);
-    } finally {
-      resetCorrelationRegistryForTests();
-      resetSessionStoreForTests();
-      unsetSessionRootForTests();
-      resetDurableForTests();
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
+    })
+  );
 });

@@ -15,7 +15,7 @@ async function fixture(owner = 'A', protectedPage = true) {
     permissions:{contains:vi.fn(async()=>true)},
     tabs:{get:vi.fn(async()=>({id:17,url:'https://fixture.invalid/'})),remove:vi.fn(async()=>{})},
     scripting:{executeScript:vi.fn(async(_args:unknown)=>[{frameId:0,documentId:String(randomUUID()),result:{text:'Visible update',refs:[],elements:0}}])},
-    debugger:{attach:vi.fn(async()=>{}),detach:vi.fn(async()=>{}),sendCommand:vi.fn(async()=>({}))}
+    debugger:{attach:vi.fn(async()=>{}),detach:vi.fn(async()=>{}),sendCommand:vi.fn(async(_target:unknown,_method:string,_params?:unknown)=>({}))}
   };
   const create = runInNewContext(`${source};createBrowserControl`, {browserPage:()=>{},crypto:{randomUUID},navigator:{userAgent:'Chrome'},setTimeout,clearTimeout,TextEncoder,URL});
   const transport = vi.fn(async()=>({ok:true,data:{allowed:true,epoch:'epoch',policy:{read:true,write:true},requests:[]}}));
