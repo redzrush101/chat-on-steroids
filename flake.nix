@@ -43,6 +43,12 @@
           touch "$out/${name}"
         '';
       });
+      mkApp = pkgs: import ./nix/package.nix {
+        inherit pkgs;
+        src = self;
+        version = package.version;
+        electronVersion = package.devDependencies.electron;
+      };
     in {
       devShells = eachSystem (pkgs: {
         default = pkgs.mkShell {
@@ -52,11 +58,15 @@
       packages = eachSystem (pkgs: {
         bundle = mkBundle pkgs;
         default = mkBundle pkgs;
+      } // nixpkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+        app = mkApp pkgs;
       });
       checks = eachSystem (pkgs: {
         bundle = mkBundle pkgs;
         typecheck = mkCheck pkgs "typecheck" "npm run typecheck";
         packaging = mkCheck pkgs "packaging" "npm test -- test/packaging.test.ts";
+      } // nixpkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+        app = mkApp pkgs;
       });
     };
 }

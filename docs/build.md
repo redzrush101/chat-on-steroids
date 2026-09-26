@@ -15,10 +15,12 @@ npm run build                 # Electron main, preload and renderer
 
 ```sh
 nix build .#bundle            # compiled app and extension in result/
-nix flake check               # bundle, TypeScript and packaging tests
+nix build .#app               # runnable x86_64 Linux package
+nix run .#app                 # launch the x86_64 Linux package
+nix flake check               # bundle, types, packaging and Linux app checks
 ```
 
-The Nix bundle uses dependencies from the committed npm lockfile. It contains the compiled app, extension, package metadata and license. It is an intermediate build artifact; the native installers also need Electron, native modules, the tunnel client, ripgrep and platform packaging. Build those installers on their target operating system with the command below. `nix flake check` does not replace the full `npm run verify` test gate.
+The Nix bundle uses dependencies from the committed npm lockfile. It contains the compiled app, extension, package metadata and license. It is an intermediate build artifact. The x86_64 Linux app also includes the pinned Electron, native modules, tunnel client and ripgrep; its build checks those runtimes under Electron. Nix uses upstream release checksums and follows the packaging conventions in nixpkgs. Windows, macOS and Linux installer formats still use the target-OS package script below. `nix flake check` does not replace the full `npm run verify` test gate.
 
 The build uses Node 24 LTS. Vite stays on 7 because electron-vite 5 declares Vite 5–7 support; Node types stay on 24 to match Electron. The node-pty prerelease supplies the native prebuild layout checked by the package script. Tunnel and ripgrep versions and checksums live in `scripts/packaging-versions.mjs`.
 

@@ -3121,7 +3121,7 @@ npm run verify:notices
 npm run verify
 npm run build
 nix develop                        # optional Linux/macOS Node 24 environment
-nix flake check                    # compiled bundle, TypeScript and packaging tests
+nix flake check                    # compiled bundle, TypeScript, packaging and Linux app checks
 node scripts/package.mjs --platform darwin --arch x64 --dir  # unpacked target on a matching host
 ```
 
@@ -3182,7 +3182,7 @@ upstream binaries while retaining that distribution's checksum or notices.
 | Build owner | Contract |
 | --- | --- |
 | `scripts/package.mjs` | Icons → bundle → explicit target resources/native staging → builder with publishing disabled. |
-| `flake.nix`, `docs/build.md` | Pinned Node development shell, lockfile-based source bundle and build commands. The bundle is not a native installer. |
+| `flake.nix`, `nix/package.nix`, `docs/build.md` | Pinned Node shell, lockfile-based source bundle and runnable x86_64 Linux app. The bundle is not a native installer. |
 | `packaging-targets.mjs`, `packaging-versions.mjs` | Supported OS/arch vocabulary and pinned target checksums; fetchers share these authorities. |
 | `prepare-packaging-native.mjs` | Exact target node-pty/Sharp/tree-sitter from verified package material; host leftovers cannot win. |
 | `prepare-macos-desktop-helper.mjs` | Thin target Swift dylib + matching N-API addon; packaged in-process permission identity. |
