@@ -3031,7 +3031,7 @@ remain semantically targetable; they never receive image coordinates or supply d
 Operational Desktop errors expose their original code, nullable completion evidence and a concrete
 recovery step. Recovery never dispatches another input or treats a target failure as global
 read-only mode. Preserve exact identity, generation, geometry, clipboard and browser policy checks.
-See `docs/worklog-2026-09-19-computer-use-audit.md` for the forty-chat audit and regression coverage.
+Use the current Desktop tests and source when investigating regression coverage.
 
 For Chromium browser windows, `BrowserRootView` owns the current accessibility tree, including
 the address bar and displayed document. Legacy renderer HWNDs can expose old tabs with plausible
@@ -3120,12 +3120,13 @@ npm run verify:privacy
 npm run verify:notices
 npm run verify
 npm run build
-npm run dist                       # current OS, x64 + arm64
-npm run dist:dir:mac:x64            # example unpacked target on a matching host
+nix develop                        # optional Linux/macOS Node 24 environment
+nix flake check                    # compiled bundle, TypeScript and packaging tests
+node scripts/package.mjs --platform darwin --arch x64 --dir  # unpacked target on a matching host
 ```
 
 Use `npm ci` for an intentionally needed reproducible dependency install, not as routine
-cleanup of this shared tree. `verify:ci` fetches rg, checks privacy/notices/native-source metadata,
+cleanup of this shared tree. `verify` fetches rg, checks privacy/notices/native-source metadata,
 typechecks, verifies Electron resolves, runs Vitest excluding `computer` and `mcp-shutdown`,
 then runs those suites with one worker. The real desktop foreground assertion must not compete
 with other suites' native windows or input; its assertions remain unchanged. `vitest.config.ts`
@@ -3144,9 +3145,9 @@ work must name the original PR/author and carry appropriate GitHub-linked `Co-au
 trailers; update `CONTRIBUTORS.md` and distinguish incorporated code from reports/proposals.
 Closing a PR or rewriting its implementation does not remove the contributor's credit.
 
-Record changes and actual checks in a focused worklog. Keep security reproductions/private
-session material out of public docs and fixtures; follow `SECURITY.md`. Do not package, install,
-commit or publish merely because a source/documentation task was requested.
+Record changes and actual checks in the pull request and commit history. Keep security
+reproductions/private session material out of public docs and fixtures; follow `SECURITY.md`.
+Do not package, install, commit or publish merely because a source/documentation task was requested.
 
 Runtime data is under Electron userData: `%APPDATA%/chat-on-steroids` on Windows,
 `~/Library/Application Support/chat-on-steroids` on macOS and the XDG config location on Linux.
@@ -3181,6 +3182,7 @@ upstream binaries while retaining that distribution's checksum or notices.
 | Build owner | Contract |
 | --- | --- |
 | `scripts/package.mjs` | Icons → bundle → explicit target resources/native staging → builder with publishing disabled. |
+| `flake.nix`, `docs/build.md` | Pinned Node development shell, lockfile-based source bundle and build commands. The bundle is not a native installer. |
 | `packaging-targets.mjs`, `packaging-versions.mjs` | Supported OS/arch vocabulary and pinned target checksums; fetchers share these authorities. |
 | `prepare-packaging-native.mjs` | Exact target node-pty/Sharp/tree-sitter from verified package material; host leftovers cannot win. |
 | `prepare-macos-desktop-helper.mjs` | Thin target Swift dylib + matching N-API addon; packaged in-process permission identity. |
