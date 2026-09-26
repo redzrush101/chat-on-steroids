@@ -3,8 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const source = readFileSync('extension/browser-control.js','utf8')
-  .replace(/^import .*\n/, '').replace('export function ', 'function ');
+const observations = readFileSync('extension/browser-control-observations.js', 'utf8')
+  .replace('export function ', 'function ');
+const source = `${observations}\n${readFileSync('extension/browser-control.js','utf8')
+  .replace(/^import .*\n/gm, '').replace('export function ', 'function ')}`;
 
 async function fixture(owner = 'A', protectedPage = true) {
   const saved = {browserId:randomUUID(),epoch:'epoch',receipt:null,tabs:[{tabId:17,owner,lease:'lease'}]};
@@ -25,6 +27,21 @@ async function fixture(owner = 'A', protectedPage = true) {
 afterEach(()=>vi.useRealTimers());
 
 describe('browser extension release custody',()=>{
+  it('projects retained console and network observations without exposing request headers', async()=>{
+    const {control,command}=await fixture('A',false);
+    await control.event({tabId:17},'Runtime.consoleAPICalled',{type:'warn',args:[{value:'warning text'}]});
+    await control.event({tabId:17},'Network.requestWillBeSent',{requestId:'request-1',request:{url:'https://fixture.invalid/data',method:'GET',headers:{Authorization:'secret','X-Test':'visible'}},timestamp:1});
+    await control.event({tabId:17},'Network.responseReceived',{requestId:'request-1',response:{status:200,mimeType:'text/plain',headers:{Cookie:'private'}}});
+    const consoleResult=await control.execute({...command('list'),tool:'browser_console',args:{tabId:17}});
+    expect(consoleResult.value.entries).toEqual([expect.objectContaining({level:'warning',message:'warning text',seq:1})]);
+    const networkResult=await control.execute({...command('list'),tool:'browser_network',args:{tabId:17}});
+    expect(networkResult.value.entries).toEqual([expect.objectContaining({requestId:'main:request-1',status:200,seq:3})]);
+    expect(JSON.stringify(networkResult.value)).not.toContain('secret');
+    expect(JSON.stringify(networkResult.value)).not.toContain('private');
+    expect(await control.execute({...command('list'),tool:'browser_network',args:{tabId:17,after:3}}))
+      .toMatchObject({value:{entries:[],nextCursor:3}});
+  });
+
   it('reads an unclaimed protected tab without attaching, detaching or taking input ownership',async()=>{
     const {chrome,control,command}=await fixture();
     const inspect={...command('list'),tool:'browser_snapshot',args:{tabId:18,selector:'main',maxNodes:30,maxChars:2000}};

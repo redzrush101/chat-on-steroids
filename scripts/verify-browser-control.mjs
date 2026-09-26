@@ -44,7 +44,7 @@ const port=server.address().port,base=`http://127.0.0.1:${port}`;
 const wss=new WebSocketServer({server});
 wss.on('connection',ws=>{wakeClients.add(ws);ws.on('close',()=>wakeClients.delete(ws));});
 const extension=path.join(run,'extension');await fs.mkdir(extension);
-for(const file of ['browser-control.js','browser-control-page.js']) await fs.copyFile(path.resolve('extension',file),path.join(extension,file));
+for(const file of ['browser-control.js','browser-control-page.js','browser-control-observations.js']) await fs.copyFile(path.resolve('extension',file),path.join(extension,file));
 await fs.writeFile(path.join(extension,'manifest.json'),JSON.stringify({manifest_version:3,name:'CoS isolated browser fixture',version:'1.0.0',permissions:['debugger','tabs','storage','scripting'],host_permissions:[`${base}/*`,`http://localhost:${port}/*`],background:{service_worker:'fixture.js',type:'module'}}));
 await fs.writeFile(path.join(extension,'fixture.js'),`import {createBrowserControl} from './browser-control.js';
 const transport=async(_path,init)=>{try{const r=await fetch(${JSON.stringify(base+'/rpc')},{...init,headers:{'x-fixture-key':${JSON.stringify(apiKey)},'content-type':'application/json'}});return {ok:r.ok,status:r.status,data:await r.json()};}catch{return {ok:false,status:0};}};

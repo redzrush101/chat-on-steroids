@@ -3,8 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const source = readFileSync('extension/browser-control.js', 'utf8')
-  .replace(/^import .*\n/, '').replace('export function ', 'function ');
+const observations = readFileSync('extension/browser-control-observations.js', 'utf8')
+  .replace('export function ', 'function ');
+const source = `${observations}\n${readFileSync('extension/browser-control.js', 'utf8')
+  .replace(/^import .*\n/gm, '').replace('export function ', 'function ')}`;
 type Tab = {id:number;url:string;pendingUrl?:string;status:string;title?:string;active?:boolean};
 function event() {
   const listeners = new Set<(...args:any[])=>void>();
