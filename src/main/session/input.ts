@@ -1374,6 +1374,26 @@ export function acknowledgeBrowserInput(id: string, owner: string, conversationI
     return true;
   });
 }
+/** A lost page ACK can be recovered from the recorder's exact native user row.
+ * The full frozen transport text, conversation, local session, authorization and
+ * unique native id must all agree. This path never grants another Send attempt. */
+export async function reconcileRecordedBrowserInputs(conversationId: string, sessionId: string): Promise<void> {
+  const rows = (await listInputs()).filter(row => row.state === 'browser' && row.purpose !== 'decision' &&
+    row.sessionId === sessionId && row.conversationId === conversationId && row.owner && row.deliveryText &&
+    row.sendAuthorizedAt !== undefined);
+  if (!rows.length) return;
+  const events = await readRecentEvents(sessionId, 32, { kinds: ['user_message'] });
+  const readback = (text: string) => text.replace(/\\\n/g, '\n').replace(/\\([!-/:-@\[-`{-~])/g, '$1');
+  for (const row of rows) {
+    const matches = events.filter((event): event is Extract<typeof event, { kind: 'user_message' }> => event.kind === 'user_message' && event.source === 'extension' &&
+      !!event.messageId && !event.inputId && !event.message.truncated && event.time >= row.sendAuthorizedAt! &&
+      (event.message.text === row.deliveryText || readback(event.message.text) === row.deliveryText));
+    if (matches.length !== 1) continue;
+    const nativeId = matches[0]!.messageId!;
+    if (rows.some(other => other !== row && other.messageId === nativeId)) continue;
+    await acknowledgeBrowserInput(row.id, row.owner!, conversationId, nativeId);
+  }
+}
 /** A later exact call proves receipt of an earlier tool response, never of a queued task. */
 function toolInputReceipt(entry: InputEntry, sessionId: string, conversationId: string, startedAt: number): InputEntry {
   const deliveredAt = offered.get(entry.id);

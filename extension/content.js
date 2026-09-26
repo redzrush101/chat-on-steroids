@@ -756,7 +756,12 @@
   function matchesSubmittedUser(message, expected) {
     if (typeof expected !== 'string' || expected.length > 240000) return false;
     const source = userMessageSource(message);
-    return source !== null && sendText(source.text) === sendText(expected);
+    if (source === null) return false;
+    if (sendText(source.text) === sendText(expected)) return true;
+    // The native Markdown serializer escapes hard breaks as well as punctuation.
+    // Compare the whole provider source after readback decoding; the fresh native
+    // message id and this document's Send lifetime still fence the receipt.
+    return sendText(unescapeMarkdown(source.text.replace(/\\\n/g, '\n'))) === sendText(expected);
   }
   /** An app-owned bootstrap may return escaped. Ordinary input authorization keeps
    * matchesSubmittedUser; native message identity and document lifetime still own the receipt. */
@@ -11078,6 +11083,9 @@
       // The claim remains inert if this ACK is lost; no duplicate send after a reload.
       const acknowledged = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation, messageId: receipt.user?.id, owner: input.owner, lifetime: input.lifetime, ack: true });
       const accepted = acknowledged?.data?.ok === true;
+      // An explicit app rejection cannot promote this page's pending composer
+      // receipt into an authored turn during the next activity observation.
+      if (acknowledged?.data?.ok === false && userSendReceipt === witnessedSendReceipt) userSendReceipt = null;
       if (accepted && deliveredConversation && receipt.user?.id && sendingTarget() &&
           userSendReceipt === witnessedSendReceipt && witnessedSendReceipt?.text === submittedText &&
           (witnessedSendReceipt.conversationId === target ||

@@ -378,6 +378,34 @@ it('projects and delivers a direct correction through the real recorder, bridge 
   expect((await input.listInputs()).find(entry => entry.id === row.id)).toMatchObject({ state: 'sent', messageId: 'direct-user' });
 });
 
+it('recovers one authorized native send from escaped recorder evidence after its ACK is lost', async () => {
+  const store = await import('../src/main/session/store.js');
+  const conversationId = randomUUID();
+  const session = await createSession({ title: 'Lost input receipt', conversationId });
+  const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto' as const, text: 'Check #heading\nand reply.' });
+  const claim = await post('/input/claim', { id: row.id, owner: 'lost-receipt-page', conversationId });
+  expect(claim.body.input?.text).toBeTruthy();
+  expect((await post('/input/claim', { id: row.id, owner: 'lost-receipt-page', conversationId, authorize: true })).body.ok).toBe(true);
+  const escaped = claim.body.input.text.replace(/#/g, '\\#').replace(/\n/g, '\\\n');
+  expect(userPromptText(escaped)).toBe(userPromptText(claim.body.input.text));
+  const wrong = await post('/events', { conversationId, events: [
+    { kind: 'user_message', messageId: 'unrelated-user', text: 'Check #heading and reply.', time: Date.now() }
+  ] });
+  expect(wrong.status).toBe(200);
+  expect((await input.listInputs()).find(entry => entry.id === row.id)?.state).toBe('browser');
+  const nativeId = randomUUID();
+  expect((await post('/events', { conversationId, events: [
+    { kind: 'user_message', messageId: nativeId, text: escaped, time: Date.now() }
+  ] })).status).toBe(200);
+  expect((await input.listInputs()).find(entry => entry.id === row.id)).toMatchObject({ state: 'sent', messageId: nativeId });
+  const users = (await store.readRecentEvents(session.id, 10, { kinds: ['user_message'] }))
+    .filter((event): event is Extract<typeof event, { kind: 'user_message' }> => event.kind === 'user_message');
+  expect(users.filter(event => event.messageId === nativeId)).toHaveLength(1);
+  expect(users.find(event => event.messageId === nativeId)?.authoredText).toBe(row.text);
+  expect((await post('/input/ack', { id: row.id, owner: 'lost-receipt-page', conversationId, messageId: nativeId })).body.ok).toBe(true);
+  expect((await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto' as const, text: 'The next instruction' })).state).toBe('queued');
+});
+
 async function attributedMcp(conversationId: string): Promise<void> {
   const requestId = randomUUID();
   await post('/events', { conversationId, events: [{ kind: 'tool_evidence', time: Date.now(),

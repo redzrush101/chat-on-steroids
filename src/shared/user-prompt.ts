@@ -3,6 +3,13 @@ export const MAX_CHATGPT_MESSAGE_CHARS = 96_000;
 const continuation = (text: string): string => /^\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n/.exec(text)?.[0] ?? '';
 export function userPromptText(text: string): string | null {
   text = text.replace(/\r\n?/g, '\n');
+  const plain = parseUserPrompt(text);
+  if (plain !== null) return plain;
+  // ChatGPT's Markdown serializer may escape punctuation and hard breaks in the
+  // provider readback. Only accept the decoded text when its entire frame validates.
+  return parseUserPrompt(text.replace(/\\\n/g, '\n').replace(/\\([!-/:-@\[-`{-~])/g, '$1'));
+}
+function parseUserPrompt(text: string): string | null {
   const identity = continuation(text);
   const header = /^\[\[COS_CONTEXT:(\d{1,6})\]\]\n/.exec(text.slice(identity.length));
   if (!header) return null;

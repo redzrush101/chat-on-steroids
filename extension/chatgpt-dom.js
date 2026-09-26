@@ -66,6 +66,10 @@ var CLF_DOM = (() => {
   const promptContinuation = value => /^\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n/.exec(value)?.[0] ?? '';
   function userPromptText(value) {
     value = value.replace(/\r\n?/g, '\n');
+    const plain = parseUserPrompt(value);
+    return plain !== null ? plain : parseUserPrompt(value.replace(/\\\n/g, '\n').replace(/\\([!-/:-@\[-`{-~])/g, '$1'));
+  }
+  function parseUserPrompt(value) {
     const identity = promptContinuation(value);
     const header = /^\[\[COS_CONTEXT:(\d{1,6})\]\]\n/.exec(value.slice(identity.length));
     if (!header) return null;

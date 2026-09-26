@@ -573,6 +573,28 @@ describe('desktop input delivery and helper ownership', () => {
   const chatB = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
   const text = 'Inspect the exact requested task';
   const claimed = (extra: Record<string, unknown> = {}) => ({ id: inputId, owner: 'input-owner', text, model: null, reasoningEffort: null, purpose: 'user', images: [], ...extra });
+  it('acknowledges an exact native user row after Markdown escapes punctuation and hard breaks', async () => {
+    const submitted = 'Check #heading\nand reply.';
+    live = await harness(`https://chatgpt.com/c/${chatA}`, {
+      desktop_input: message => ({ ok: true, data: message.authorize || message.ack
+        ? { ok: true } : { input: claimed({ text: submitted }) } })
+    });
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+      userTurn(live!.document, 'escaped-input', 'Check \\#heading\\\nand reply.', { sent: false });
+      live!.document.querySelector('#prompt-textarea')!.textContent = '';
+    });
+    expect(await live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: chatA })).toEqual({ ok: true });
+    expect(live.sent.filter(message => message.type === 'desktop_input' && message.ack)).toHaveLength(1);
+  });
+  it('shows only the authored text of a complete Markdown-escaped context frame', async () => {
+    live = await harness(`https://chatgpt.com/c/${chatA}`);
+    const framed = prependUserPrompt('Check #heading\nand reply.', 'Follow #project guidance.');
+    const escaped = framed.replace(/#/g, '\\#').replace(/\n/g, '\\\n');
+    const user = userTurn(live.document, 'escaped-context', escaped, { sent: false });
+    (live.window as any).CLF_DOM.presentUserPrompts(() => escaped);
+    expect(user.querySelector('[data-clf-user-text]')?.textContent).toBe('Check #heading\nand reply.');
+    expect(user.querySelector('[data-clf-prompt-hidden]')?.textContent).toBe(escaped);
+  });
   it('reports native Stop for a silence pickup without claiming or interrupting the turn', async () => {
     live = await harness();
     startGenerating(live.document); live.hook.observe(); await settle();
