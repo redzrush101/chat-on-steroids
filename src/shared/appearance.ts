@@ -17,8 +17,8 @@ export interface AppearanceSettings {
 export function defaultAppearance(): AppearanceSettings {
   return {
     light: { background: '#f4f4f5', sidebar: '#e9edf2', accent: '#486f9d', contrast: 45 },
-    dark: { background: '#181818', sidebar: '#1a2129', accent: '#b0cbed', contrast: 60 },
-    font: 'system', fontSize: 14, translucentSidebar: true
+    dark: { background: '#111318', sidebar: '#171a20', accent: '#8fb7da', contrast: 60 },
+    font: 'system', fontSize: 14, translucentSidebar: false
   };
 }
 

@@ -41,7 +41,7 @@ import {
 } from '../shared/types.js';
 import type { SwarmState } from '../shared/session.js';
 import { $, ago, el, icon, run, shortAgo, toast } from './dom.js';
-import { chatApply, chatSettingsPatch, chatVisible, initChat, openChatView } from './chat.js';
+import { chatApply, chatSettingsPatch, chatVisible, initChat, openChatView, openWorkspaceFiles } from './chat.js';
 
 declare global {
   interface Window {
@@ -205,6 +205,7 @@ $('sessionList').addEventListener('click', event => {
   if ((event.target as HTMLElement).closest('[data-id], [data-new-project]')) showTab('chat');
 }, { capture: true });
 $('newChat').addEventListener('click', () => showTab('chat'));
+$('sidebarFiles').addEventListener('click', () => { showTab('chat'); openWorkspaceFiles(); });
 $('sidebarPlugins').addEventListener('click', () => showTab('plugins'));
 $('sidebarPets').addEventListener('click', () => showTab('pets'));
 $('sidebarSkills').addEventListener('click', () => showTab('skills'));
@@ -1046,6 +1047,7 @@ function paintSetupProfiles(next: AppState): void {
     select.dataset.profiles = signature;
   }
   $('setupProfileCurrent').textContent = profiles[0]!.name;
+  $('sidebarProfileName').textContent = profiles[0]!.name;
   select.disabled = setupProfileBusy;
   for (const button of menu.querySelectorAll<HTMLButtonElement>('button')) {
     button.disabled = setupProfileBusy || (button.dataset.removeProfileId !== undefined && profiles.length === 1);

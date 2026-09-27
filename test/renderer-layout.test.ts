@@ -113,6 +113,10 @@ function rule(selector: string): string {
 }
 
 describe('the session card header', () => {
+  it('uses the platform sans font before locale fallbacks for transcript punctuation', () => {
+    expect(css).toContain('var(--ui-font, system-ui,');
+    expect(rule('.msg')).toContain('letter-spacing: 0');
+  });
   it('indents rendered project tasks once and gives worker children their additional depth', () => {
     expect(rule('.project-group > .sess, .project-group > .worker-group')).toContain('margin-inline-start: 24px');
     expect(rule('.worker-group')).toContain('padding-left: 16px');
@@ -130,6 +134,7 @@ describe('the session card header', () => {
     expect(header.contains(connection)).toBe(false);
     expect(footer).not.toBeNull();
     expect([...footer.children].map((node) => (node as HTMLElement).id || (node as HTMLElement).className)).toEqual([
+      'sidebar-profile',
       'workspaceSettings',
       'connection-anchor'
     ]);
@@ -266,7 +271,7 @@ describe('the session-row chat actions', () => {
   });
 
   it('uses the configured accent for working and unseen response state', () => {
-    expect(rule('.session-status.is-active, .session-status.is-working')).toContain('border-top-color: var(--accent)');
+    expect(rule('.session-status.is-active::before, .session-status.is-working::before')).toContain("content: '✳'");
     expect(rule('.session-status.is-unseen')).toContain('background: var(--accent)');
   });
 

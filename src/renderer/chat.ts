@@ -17,7 +17,7 @@ import { renderGoalReasoning } from './goal-reasoning.js';
 import { preserveTimelineViewport } from './timeline-scroll.js';
 import { createSidebarOrder, SIDEBAR_PROJECT_SCOPE } from './sidebar-order.js';
 import { createSidebarCompletionState } from './sidebar-completion.js';
-import { toolResultText } from './tool-result.js';
+import { historicalDiffLines, toolResultText, unifiedDiffLines, type DiffLine } from './tool-result.js';
 import { chatErrorPresentation, duplicateChatErrors } from './chat-error.js';
 import { renderRecoveryCountdowns } from './recovery.js';
 import type { RecoveryCountdown } from '../shared/recovery.js';
@@ -138,6 +138,9 @@ let selectedId: string | null = null;
 let newChatSelected = true;
 let selectedProjectId: string | null = null;
 let projects: LocalProject[] = [];
+let composerGitGeneration = 0;
+let composerGitProjectId: string | null = null;
+let composerContextDismissedFor: string | null = null;
 /** Window-local disclosure intent. Project groups start closed until the user or selection opens one. */
 const expandedProjects = new Set<string>();
 const projectVisibleCounts = new Map<string, number>();
@@ -158,6 +161,61 @@ function selectedLocalProject(): LocalProject | null {
   }
   return newChatSelected && selectedProjectId
     ? projects.find(project => project.id === selectedProjectId && !project.ungrouped) ?? null : null;
+}
+function composerContextKey(): string {
+  return newChatSelected ? `draft:${selectedProjectId ?? ''}` : `session:${selectedId ?? ''}`;
+}
+/** Paint repository context only from a read-only snapshot for the selected local project. */
+async function refreshComposerContext(): Promise<void> {
+  const generation = ++composerGitGeneration;
+  const selection = selectionGeneration;
+  const sessionId = selectedId;
+  const isNewChat = newChatSelected;
+  const draftProjectId = selectedProjectId;
+  const ownsSelection = () => selectionGeneration === selection && selectedId === sessionId &&
+    newChatSelected === isNewChat && selectedProjectId === draftProjectId;
+  const project = selectedLocalProject();
+  composerGitProjectId = project?.id ?? null;
+  const context = $('composerContext');
+  const projectName = $('composerProjectName');
+  const branch = $('composerGitBranch');
+  const stats = $('composerGitStats');
+  const review = $<HTMLButtonElement>('composerReviewChanges');
+  const show = $<HTMLButtonElement>('composerShowContext');
+  if (!project) {
+    context.hidden = true; projectName.textContent = ''; branch.textContent = '';
+    stats.hidden = true; stats.textContent = ''; review.hidden = true; show.hidden = true;
+    return;
+  }
+  if (composerContextDismissedFor === composerContextKey()) {
+    context.hidden = true; show.hidden = false;
+    return;
+  }
+  show.hidden = true;
+  projectName.textContent = project.name;
+  context.hidden = false;
+  branch.textContent = t('Checking repository…');
+  stats.hidden = true; stats.textContent = ''; review.hidden = true;
+  const snapshot = await run(api.getProjectGitSnapshot(project.id));
+  if (generation !== composerGitGeneration || !ownsSelection() || selectedLocalProject()?.id !== project.id) return;
+  if (!snapshot || snapshot.state !== 'ready') {
+    branch.textContent = snapshot?.state === 'not-repository' ? t('No Git repository') : t('Git unavailable');
+    return;
+  }
+  branch.textContent = snapshot.currentBranch ?? t('Branch unavailable');
+  if (snapshot.changes.length) {
+    review.hidden = false;
+  }
+  if (snapshot.changes.length && !snapshot.truncated) {
+    let additions = 0, deletions = 0, complete = true;
+    for (const change of snapshot.changes) {
+      if (change.additions === null || change.deletions === null) complete = false;
+      else { additions += change.additions; deletions += change.deletions; }
+    }
+    stats.textContent = complete ? `+${additions} −${deletions}` : t('{0} changed', [snapshot.changes.length]);
+    stats.title = t('{0} changed', [snapshot.changes.length]);
+    stats.hidden = false;
+  }
 }
 const PROJECT_TASK_PAGE_SIZE = 5;
 const PROJECT_TASK_PAGE_INCREMENT = 8;
@@ -341,7 +399,7 @@ function sessionWorking(summary: SessionSummary): boolean {
  */
 const SESSION_SPIN_MS = 900;
 function syncSessionSpinner(indicator: HTMLElement): void {
-  indicator.style.animationDelay = `-${Date.now() % SESSION_SPIN_MS}ms`;
+  indicator.style.setProperty('--session-spin-delay', `-${Date.now() % SESSION_SPIN_MS}ms`);
 }
 
 /**
@@ -604,6 +662,9 @@ async function loadSessions(): Promise<void> {
     detailFor = null;
     detailCursor = null;
   }
+  const currentProject = selectedLocalProject();
+  if (currentProject?.id !== composerGitProjectId) void refreshComposerContext();
+  else if (currentProject) $('composerProjectName').textContent = currentProject.name;
   paintSessions();
   await loadDetail();
   void refreshInputQueue();
@@ -652,6 +713,7 @@ function projectSortEntries(): Array<{ id: string; scope: string }> {
 function paintSessions(): void {
   // Keep the pointer's elected rows alive while asynchronous activity snapshots arrive.
   if (sidebarOrder?.interacting) return;
+  $<HTMLButtonElement>('sidebarFiles').disabled = !selectedLocalProject();
   document.getElementById('sessionTooltip')?.remove();
   const projectList = $('projectList'), chatList = $('chatList');
   // Activity replaces sidebar nodes. Keep an actively focused project disclosure
@@ -762,7 +824,7 @@ function paintSessions(): void {
               if (images) imageDrafts.set(draftKey(), images);
               else imageDrafts.delete(draftKey());
               imageDrafts.delete(oldKey);
-              ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => t('Ask anything…'));
+              ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => t('Type / for commands…'));
             } else selectedProjectId = null;
           }
           paintSessions(); void refreshInputQueue();
@@ -1038,7 +1100,7 @@ function paintTaskPlan(): void {
   const plan = taskPlans.get(draftKey());
   const preview = $('taskPlanPreview'); preview.replaceChildren();
   preview.hidden = !plan || (!plan.requestId && !plan.stages && !plan.error);
-  ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => plan && !plan.text ? t("Describe the task to turn into a plan…") : t("Ask anything…"));
+  ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => plan && !plan.text ? t("Describe the task to turn into a plan…") : t("Type / for commands…"));
   if (plan?.stages) paintPreparedPlan();
   else if (plan?.error) {
     const failure = plan.error;
@@ -1350,6 +1412,10 @@ async function loadDetail(navigate = false, olderBefore?: number, newerFrom?: nu
       ? detail.nextFrom
       : detail.events.reduce((cursor, event) => Math.max(cursor, event.seq + 1), incremental ? detailCursor! : 0));
   totalEvents = detail.total;
+  // Recorded changes belong to this exact selected session. Refresh the Git projection
+  // once for the batch; the Files panel's watcher is dormant while its dock is closed.
+  if (incremental && detail.events.some(event => event.kind === 'tool_call' && (event.call.changes?.length ?? 0) > 0))
+    void refreshComposerContext();
   if (opening) $('timelineContent').style.removeProperty('--timeline-scroll-reserve');
   paintDetail(!prepend && newerFrom === undefined);
   // A sidebar completion becomes read only after this exact selection/load has successfully
@@ -1746,7 +1812,9 @@ function toolBody(event: Extract<SessionEvent, { kind: 'tool_call' }>, context?:
     if (approximate) count.append(el('span', '', () => t(' (approx.)')));
     head.append(count);
   }
-  if (summary.metric) head.append(toolMetric(summary.metric));
+  // The exact change count is already in the header; avoid repeating the same delta.
+  if (summary.metric && !(call.changes?.length && /^~?(?:\+\d+(?:\s+[−-]\d+)?|[−-]\d+)$/.test(summary.metric)))
+    head.append(toolMetric(summary.metric));
   const project = context ? null : selectedLocalProject();
   const sessionId = context ? null : selectedId;
   const reviewIndices = call.outcome === 'ok' ? (call.changes ?? []).flatMap((change, index) =>
@@ -1851,7 +1919,20 @@ async function fillTimelineHistory(): Promise<void> {
 function appendToolOutput(box: HTMLDetailsElement, { call }: Extract<SessionEvent, { kind: 'tool_call' }>,
   context?: { id: string; current: () => boolean }): void {
   const raw = el('div', 'raw');
-  const appendText = (label: () => string, value: string, truncated: boolean, chars: number) => {
+  const appendDiffRows = (host: HTMLElement, lines: readonly DiffLine[]) => {
+    const code = el('div', 'tool-diff-lines');
+    code.setAttribute('role', 'table');
+    lines.forEach(line => {
+      const row = el('div', `tool-diff-line is-${line.kind}`);
+      row.setAttribute('role', 'row');
+      row.append(el('span', 'tool-diff-gutter', line.oldLine?.toString() ?? ''),
+        el('span', 'tool-diff-gutter', line.newLine?.toString() ?? ''),
+        el('code', 'tool-diff-content', line.text || ' '));
+      code.append(row);
+    });
+    host.append(code);
+  };
+  const appendText = (label: () => string, value: string, truncated: boolean, chars: number, diff = false): HTMLElement => {
     const panel = el('div', 'tool-output');
     const header = el('div', 'tool-output-header');
     header.append(icon(KIND_ICON[call.summary.kind] ?? 'i-terminal', 'ico'), el('strong', '', label));
@@ -1862,9 +1943,54 @@ function appendToolOutput(box: HTMLDetailsElement, { call }: Extract<SessionEven
       else toast(t('Could not copy text.'));
     })());
     header.append(copy);
-    panel.append(header, textBlock('pre', value, truncated, chars));
-    raw.append(panel);
+    panel.append(header);
+    const lines = diff ? unifiedDiffLines(value) : null;
+    if (lines) {
+      appendDiffRows(panel, lines);
+      if (truncated) panel.append(el('p', 'cut', () => t(" … cut, {0} characters in the original", [compactNumber(chars)])));
+    } else panel.append(textBlock('pre', value, truncated, chars));
+    return panel;
   };
+  const sessionId = context?.id ?? selectedId;
+  const generation = selectionGeneration;
+  const reviews = call.outcome === 'ok' ? (call.changes ?? []).flatMap((change, index) =>
+    change.reviewAssetId ? [{ change, index }] : []).slice(0, 8) : [];
+  if (sessionId && reviews.length) {
+    const reviewHost = el('div', 'tool-inline-reviews');
+    raw.append(reviewHost);
+    const ownerCurrent = () => context
+      ? context.current() : selectedId === sessionId && selectionGeneration === generation;
+    const current = () => box.isConnected && box.open && ownerCurrent();
+    let epoch = 0, loading = false, loaded = false;
+    const loadReviews = async () => {
+      if (loading || loaded || !box.open || !ownerCurrent()) return;
+      loading = true;
+      const token = ++epoch;
+      reviewHost.replaceChildren(el('p', 'meta', () => t('Loading diff…')));
+      for (const { change, index } of reviews) {
+        const review = await run(api.getToolEditReview(sessionId, call.callId, index));
+        if (token !== epoch || !current()) return;
+        const panel = el('div', 'tool-inline-review');
+        panel.append(el('div', 'tool-inline-review-head', change.path));
+        if (!review || review.callId !== call.callId || review.changeIndex !== index) {
+          panel.append(el('p', 'meta', () => t('Recorded edit is unavailable.')));
+        } else {
+          const lines = historicalDiffLines(review.baseText, review.currentText);
+          if (lines) appendDiffRows(panel, lines);
+          else panel.append(el('p', 'meta', () => t('Diff preview unavailable')));
+        }
+        if (reviewHost.firstElementChild?.classList.contains('meta')) reviewHost.replaceChildren();
+        reviewHost.append(panel);
+      }
+      loading = false;
+      loaded = true;
+    };
+    box.addEventListener('toggle', () => {
+      if (box.open) void loadReviews();
+      else { epoch++; loading = false; }
+    });
+    void loadReviews();
+  }
   const facts = el('p', 'raw-facts');
   ui(facts, 'textContent', () => `${call.tool} · ${call.outcome} · ${Math.round(call.durationMs)} ms · ` +
     t("placed by {0}", [ATTRIBUTION_LABELS[call.attribution] ?? call.attribution]));
@@ -1883,10 +2009,20 @@ function appendToolOutput(box: HTMLDetailsElement, { call }: Extract<SessionEven
     raw.append(changes);
   }
 
-  appendText(() => `${t('Arguments')} · ${call.tool}`, call.args.text, call.args.truncated, call.args.chars);
+  const disclosure = (label: string, value: string, truncated: boolean, chars: number, diff = false) => {
+    const section = document.createElement('details');
+    section.className = 'tool-inspect';
+    const title = document.createElement('summary');
+    title.append(el('span', 'tool-inspect-label', () => t(label)));
+    if (diff && unifiedDiffLines(value)) section.open = true;
+    section.append(title);
+    section.append(appendText(() => t(label), value, truncated, chars, diff));
+    raw.append(section);
+  };
+  if (call.args.text) disclosure('Arguments', call.args.text, call.args.truncated, call.args.chars);
   const images = call.assets?.filter(asset => ['image/png', 'image/jpeg', 'image/webp'].includes(asset.mimeType)) ?? [];
   const readable = toolResultText(call.result.text, call.result.truncated, images.length > 0);
-  if (readable) appendText(() => `${t('Result')} · ${call.tool} · ${Math.round(call.durationMs)} ms`, readable, call.result.truncated && images.length === 0, call.result.chars);
+  if (readable) disclosure('Result', readable, call.result.truncated && images.length === 0, call.result.chars, (call.changes?.length ?? 0) > 0 || call.tool === 'apply_patch');
   // Older recordings did not retain the reason an image asset was omitted. Explain
   // the missing local preview without inferring a historical provider receipt.
   if (call.tool === 'view_image' && call.outcome === 'ok' && images.length === 0) {
@@ -3690,6 +3826,7 @@ export function chatVisible(next: boolean): void {
 
 async function refreshAll(): Promise<void> {
   await loadSessions();
+  if (selectedLocalProject()) void refreshComposerContext();
   const swarmNow = await run(api.getSwarm());
   if (swarmNow) paintSwarm(swarmNow);
 }
@@ -4199,7 +4336,7 @@ function selectSession(id: string): void {
   if (parent) expandedWorkers.add(parent);
   selectedProjectId = projectGroup(parent ? sessions.find(row => row.id === parent)?.projectId : selected?.projectId);
   if (selectedProjectId) expandedProjects.add(selectedProjectId);
-  ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => t("Ask anything…"));
+  ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => t("Type / for commands…"));
   restoreDraft();
   if (ownerChanged) {
     // Retire the prior owner now; retain only its inert painted transcript until the
@@ -4217,6 +4354,7 @@ function selectSession(id: string): void {
     handoffLoadGeneration++;
   }
   paintSessions();
+  void refreshComposerContext();
   if (ownerChanged) {
     paintDetail(false);
     paintHandoff();
@@ -4236,10 +4374,11 @@ function selectNewChat(projectId: string | null = null): void {
   // permission to discard authored text, attachments or a prepared workflow.
   $('inputQueue').replaceChildren();
   restoreDraft(); showView('timeline'); paintSessions(); void loadDetail();
+  void refreshComposerContext();
   if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
     $('composer').animate?.([{ opacity: 0.45 }, { opacity: 1 }], { duration: 150, easing: 'ease-out' });
   }
-  ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => projectId ? t("Message in {0}…", [projects.find(project => project.id === projectId)?.name ?? 'project']) : t("Ask anything…"));
+  ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => projectId ? t("Message in {0}…", [projects.find(project => project.id === projectId)?.name ?? 'project']) : t("Type / for commands…"));
   $<HTMLTextAreaElement>('chatInput').focus();
 }
 
@@ -4251,6 +4390,20 @@ export function initChat(next: Deps): void {
       .map(entry => ({ id: entry.id, scope: projectGroup(entry.projectId) ?? '' }))
   ], paintSessions);
   deps = next;
+  void refreshComposerContext();
+  api.onProjectGitChanged?.(({ projectId }) => {
+    if (selectedLocalProject()?.id === projectId) void refreshComposerContext();
+  });
+  $('composerRefreshChanges').addEventListener('click', () => void refreshComposerContext());
+  $('composerReviewChanges').addEventListener('click', () => { workspaceDocks?.activate('review'); });
+  $('composerDismissContext').addEventListener('click', () => {
+    composerContextDismissedFor = composerContextKey();
+    void refreshComposerContext();
+  });
+  $('composerShowContext').addEventListener('click', () => {
+    composerContextDismissedFor = null;
+    void refreshComposerContext();
+  });
   const stopComposerHeightMotion = installComposerHeightMotion($('composer'));
   window.addEventListener('beforeunload', stopComposerHeightMotion, { once: true });
   const chatHost = document.querySelector<HTMLElement>('[data-panel="chat"]')!;
@@ -4706,4 +4859,9 @@ export function initChat(next: Deps): void {
     Object.assign(goalProgress, progress); paintGoalProgress();
   });
   api.onSwarmChanged(paintSwarm);
+}
+
+/** The sidebar shortcut uses the same project-scoped Files dock as the chat header. */
+export function openWorkspaceFiles(): void {
+  workspaceDocks?.activate('files');
 }

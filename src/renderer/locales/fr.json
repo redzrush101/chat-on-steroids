@@ -1687,5 +1687,13 @@
   "{0} estimated tokens": "{0} jetons estimés",
   "Daily breakdown": "Détail par jour",
   "Recommended": "Recommandés",
-  "Install": "Installer"
+  "Install": "Installer",
+  "Type / for commands…": "Saisissez / pour afficher les commandes…",
+  "Checking repository…": "Vérification du dépôt…",
+  "No Git repository": "Aucun dépôt Git",
+  "Git unavailable": "Git indisponible",
+  "Branch unavailable": "Branche indisponible",
+  "{0} changed": "{0} modifiés",
+  "Hide workspace context": "Masquer le contexte de l’espace de travail",
+  "Show workspace context": "Afficher le contexte de l’espace de travail"
 }

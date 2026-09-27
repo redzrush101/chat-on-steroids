@@ -1687,5 +1687,13 @@
   "{0} estimated tokens": "{0} tokens estimados",
   "Daily breakdown": "Discriminação diária",
   "Recommended": "Recomendadas",
-  "Install": "Instalar"
+  "Install": "Instalar",
+  "Type / for commands…": "Escreva / para ver comandos…",
+  "Checking repository…": "A verificar o repositório…",
+  "No Git repository": "Sem repositório Git",
+  "Git unavailable": "Git indisponível",
+  "Branch unavailable": "Branch indisponível",
+  "{0} changed": "{0} alterados",
+  "Hide workspace context": "Ocultar contexto da área de trabalho",
+  "Show workspace context": "Mostrar contexto da área de trabalho"
 }

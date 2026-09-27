@@ -1687,5 +1687,13 @@
   "{0} estimated tokens": "推定 {0} トークン",
   "Daily breakdown": "日別の内訳",
   "Recommended": "おすすめ",
-  "Install": "インストール"
+  "Install": "インストール",
+  "Type / for commands…": "/ を入力してコマンドを表示…",
+  "Checking repository…": "リポジトリを確認中…",
+  "No Git repository": "Git リポジトリなし",
+  "Git unavailable": "Git を利用できません",
+  "Branch unavailable": "ブランチを利用できません",
+  "{0} changed": "{0} 件変更",
+  "Hide workspace context": "ワークスペースのコンテキストを非表示",
+  "Show workspace context": "ワークスペースのコンテキストを表示"
 }

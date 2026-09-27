@@ -20,6 +20,7 @@ app.whenReady().then(async () => {
     localStorage.removeItem('cos.ui.language');
     const config = {
       roots: [{name:'demo',path:'C:/demo'}], readOnly:true,
+      commandAllowlist: {enabled:false,mode:'allow',rules:[]},
       capabilities: {browse:true,search:true,read:true,metadata:true,create:false,edit:false,move:false,deleteFile:false,command:false,screen:false,control:false,clipboardRead:false,clipboardWrite:false},
       tunnel: {kind:'openai',tunnelId:'',desktopTunnelId:'',binaryPath:''},
       ui: {minimizeToTray:true,autoConnect:false,privacyScreenshots:false,theme:'dark'},

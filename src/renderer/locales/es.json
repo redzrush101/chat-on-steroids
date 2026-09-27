@@ -1687,5 +1687,13 @@
   "{0} estimated tokens": "{0} tokens estimados",
   "Daily breakdown": "Desglose diario",
   "Recommended": "Recomendados",
-  "Install": "Instalar"
+  "Install": "Instalar",
+  "Type / for commands…": "Escribe / para ver los comandos…",
+  "Checking repository…": "Comprobando el repositorio…",
+  "No Git repository": "No hay repositorio Git",
+  "Git unavailable": "Git no está disponible",
+  "Branch unavailable": "Rama no disponible",
+  "{0} changed": "{0} modificados",
+  "Hide workspace context": "Ocultar el contexto del espacio de trabajo",
+  "Show workspace context": "Mostrar el contexto del espacio de trabajo"
 }

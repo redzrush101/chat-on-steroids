@@ -27,6 +27,11 @@ afterAll(() => {
 });
 
 describe('captured ChatGPT rendered HTML', () => {
+  it('preserves contractions verbatim through Markdown rendering', () => {
+    for (const source of ["I'll check it. There's no inserted whitespace.", 'I’ll check it. There’s no inserted whitespace.']) {
+      expect(renderedMarkdown(source).textContent?.trim()).toBe(source);
+    }
+  });
   it('renders the recorded native URL token as its authored label and opens it through validated IPC', () => {
     const openLink = vi.fn(async () => ({ ok: true, data: true }));
     (dom.window as any).api.openLink = openLink;

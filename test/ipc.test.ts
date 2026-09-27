@@ -873,7 +873,7 @@ describe('settings writes from more than one UI', () => {
     expect(reply.ok, reply.error).toBe(true);
     expect(getConfig().ui.theme).toBe('dark');
     expect(nativeTheme.themeSource).toBe('dark');
-    expect(currentWindow.setBackgroundColor).toHaveBeenCalledWith('#181818');
+    expect(currentWindow.setBackgroundColor).toHaveBeenCalledWith('#111318');
     if (process.platform === 'win32') expect(currentWindow.setTitleBarOverlay).toHaveBeenCalledWith({
       height: 36, color: '#00000000', symbolColor: '#ffffff'
     });

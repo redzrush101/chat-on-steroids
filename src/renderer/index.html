@@ -105,6 +105,7 @@
         <div class="sidebar-brand"><span class="mark"><svg class="ico" viewBox="0 0 24 24"><use href="#i-mark" /></svg></span><strong>Chat On Steroids</strong></div>
         <div class="sidebar-primary" id="sidebarPrimary">
           <button class="btn new-chat" id="newChat" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-pencil" /></svg>New chat</button>
+          <button class="btn sidebar-primary-link" id="sidebarFiles" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-folder" /></svg>Files</button>
           <button class="btn sidebar-primary-link" id="sidebarPlugins" data-sidebar-page="plugins" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-plus" /></svg>Plugins</button>
           <button class="btn sidebar-primary-link" id="sidebarSkills" data-sidebar-page="skills" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-skill" /></svg>Skills</button>
           <button class="btn sidebar-primary-link" id="sidebarPets" data-sidebar-page="pets" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-paw" /></svg>Pets</button>
@@ -150,7 +151,11 @@
         </section>
 
         <div class="sidebar-bottom">
-          <button class="btn" id="workspaceSettings" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-gear" /></svg>Settings</button>
+          <div class="sidebar-profile" title="Setup profile">
+            <span class="sidebar-profile-avatar" aria-hidden="true">C</span>
+            <span class="sidebar-profile-copy"><strong id="sidebarProfileName">Default</strong><small>Setup profile</small></span>
+          </div>
+          <button class="btn" id="workspaceSettings" type="button" title="Settings" aria-label="Settings"><svg class="ico" viewBox="0 0 24 24"><use href="#i-gear" /></svg>Settings</button>
           <div class="connection-anchor">
             <button
               class="sidebar-connection"
@@ -1109,10 +1114,19 @@
             </div>
             <div class="composer-dock" id="composerDock"><section class="agent-plan" id="agentPlan" aria-label="Agent task plan" hidden></section><div id="recoveryStatus" role="status" hidden></div><div id="taskPlanPreview" aria-label="Plan stages" hidden></div><div id="finishQueue" aria-label="Queued tasks" hidden></div><div id="activeGoalRow" hidden></div></div>
             <form class="composer" id="composer">
+              <div class="composer-context" id="composerContext" hidden aria-label="Workspace">
+                <span class="composer-context-project" id="composerProjectName"></span>
+                <span class="composer-context-separator" aria-hidden="true">/</span>
+                <span class="composer-context-branch" id="composerGitBranch"></span>
+                <span class="composer-context-stats" id="composerGitStats" hidden></span>
+                <button class="composer-context-refresh" id="composerRefreshChanges" type="button" title="Refresh changes" aria-label="Refresh changes"><svg class="ico" viewBox="0 0 24 24"><use href="#i-pulse" /></svg></button>
+                <button class="composer-context-review" id="composerReviewChanges" type="button" hidden>Review</button>
+                <button class="composer-context-dismiss" id="composerDismissContext" type="button" title="Hide workspace context" aria-label="Hide workspace context"><svg class="ico" viewBox="0 0 24 24"><use href="#i-x" /></svg></button>
+              </div>
               <div id="skillPicker" class="skill-autocomplete" aria-label="Skills" hidden></div>
               <div id="composerSelectedSkills" class="composer-selected-skills" aria-label="Selected skills" hidden></div>
               <label class="sr-only" for="chatInput">Message ChatGPT</label>
-              <div id="composerImages" class="composer-images" hidden></div><textarea dir="auto" id="chatInput" rows="1" placeholder="Ask anything…"></textarea>
+              <div id="composerImages" class="composer-images" hidden></div><textarea dir="auto" id="chatInput" rows="1" placeholder="Type / for commands…"></textarea>
               <div class="composer-toolbar">
                 <details class="composer-menu" id="attachmentMenu">
                   <summary aria-label="Add attachments" title="Add attachments"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus" /></svg></summary>
@@ -1125,6 +1139,7 @@
                     </div>
                   </div>
                 </details>
+                <button class="composer-context-show" id="composerShowContext" type="button" title="Show workspace context" aria-label="Show workspace context" hidden><svg class="ico" viewBox="0 0 24 24"><use href="#i-folder" /></svg><span>Workspace</span></button>
                 <div class="composer-options">
                   <details class="composer-menu" id="composerSettings">
                     <summary aria-label="Chat options" title="Chat options"><svg class="ico" viewBox="0 0 24 24"><use href="#i-gear" /></svg></summary>

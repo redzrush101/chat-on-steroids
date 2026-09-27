@@ -165,7 +165,7 @@ async function settleHistoryFrame(w: Pick<Window, 'requestAnimationFrame'>): Pro
   await settle();
 }
 
-async function boot(events: SessionEvent[], selectExisting = true, pausedHelpers: Array<{ id: string; sourceSessionId: string }> = [], projects: LocalProject[] = [], options: { origin?: SessionSummary["origin"]; developerMode?: boolean; playfulStatus?: boolean; sessions?: SessionSummary[]; pro?: boolean; astra?: boolean; reserveOpenings?: boolean; handoff?: Handoff | null } = {}) {
+async function boot(events: SessionEvent[], selectExisting = true, pausedHelpers: Array<{ id: string; sourceSessionId: string }> = [], projects: LocalProject[] = [], options: { origin?: SessionSummary["origin"]; developerMode?: boolean; playfulStatus?: boolean; sessions?: SessionSummary[]; pro?: boolean; astra?: boolean; reserveOpenings?: boolean; handoff?: Handoff | null; gitSnapshot?: (projectId: string) => Promise<unknown> } = {}) {
   const html = await fs.readFile(path.join(process.cwd(), 'src', 'renderer', 'index.html'), 'utf8');
   dom = new JSDOM(html, { url: 'https://local.test/', pretendToBeVisual: true });
   const w = dom.window;
@@ -220,6 +220,7 @@ async function boot(events: SessionEvent[], selectExisting = true, pausedHelpers
   const api: any = new Proxy(
     {
       getState: () => ok(state),
+      getProjectGitSnapshot: (projectId: string) => options.gitSnapshot?.(projectId) ?? ok(null),
       getChatModels: () => ok({ state: 'ready', requestedAt: 1, observedAt: Date.now(), models: [{ id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', efforts: options.pro ? ['high', 'pro'] : ['none', 'high'] },
         ...(options.astra ? [{ id: 'gpt-6-pro', label: 'GPT-6 Pro', efforts: ['pro'] }] : [])] }),
       getSessionControls: (id: string) => ok({ sessionId: id, conversationId: 'chat-a', automation: live.automation, activeTurnId: 'held-turn', finishHeld: live.finishHeld, blocked: '', job: live.compacting ? { busy: true } : null }),
@@ -361,6 +362,75 @@ it('keeps legacy Files, Agents and Review toggles out of the chat while dock con
   expect(w.document.getElementById('terminalToggle')).not.toBeNull();
   w.document.getElementById('rightDockToggle')!.click();
   expect(w.document.getElementById('workDockRight')?.hidden).toBe(false);
+});
+
+it('shows observed Git context for an existing project chat and opens its review dock', async () => {
+  const project: LocalProject = { id: '33333333-3333-4333-8333-333333333333', name: 'Workspace', path: '/workspace', createdAt: T0 };
+  const gitSnapshot = vi.fn(async (projectId: string) => ({ ok: true, data: { projectId,
+    state: 'ready', currentBranch: 'feature/ui', revision: 'r1', truncated: false,
+    changes: [{ status: 'M', path: 'src/app.ts', additions: 4, deletions: 2, binary: false }] } }));
+  const { w } = await boot([], true, [], [project], { gitSnapshot });
+  await settle();
+  expect(gitSnapshot).toHaveBeenCalledWith(project.id);
+  expect(w.document.getElementById('composerContext')!.hidden).toBe(false);
+  expect(w.document.getElementById('composerGitBranch')!.textContent).toBe('feature/ui');
+  expect(w.document.getElementById('composerGitStats')!.textContent).toBe('+4 −2');
+  w.document.getElementById('composerReviewChanges')!.click();
+  expect(w.document.getElementById('workDockRight')!.hidden).toBe(false);
+  const observedCalls = gitSnapshot.mock.calls.length;
+  w.document.getElementById('composerDismissContext')!.click();
+  expect(w.document.getElementById('composerContext')!.hidden).toBe(true);
+  expect(w.document.getElementById('composerShowContext')!.hidden).toBe(false);
+  expect(gitSnapshot).toHaveBeenCalledTimes(observedCalls);
+  w.document.getElementById('composerShowContext')!.click(); await settle();
+  expect(w.document.getElementById('composerContext')!.hidden).toBe(false);
+  expect(w.document.getElementById('composerShowContext')!.hidden).toBe(true);
+  expect(gitSnapshot).toHaveBeenCalledTimes(observedCalls + 1);
+});
+
+it('does not publish a late Git snapshot after leaving its project chat', async () => {
+  const project: LocalProject = { id: '33333333-3333-4333-8333-333333333333', name: 'Workspace', path: '/workspace', createdAt: T0 };
+  const finish: Array<(value: unknown) => void> = [];
+  const gitSnapshot = vi.fn(() => new Promise(resolve => finish.push(value => resolve({ ok: true, data: value }))));
+  const { w } = await boot([], true, [], [project], { gitSnapshot });
+  expect(finish.length).toBeGreaterThan(0);
+  w.document.getElementById('newChat')!.click();
+  await settle();
+  for (const resolve of finish) resolve({ projectId: project.id, state: 'ready', currentBranch: 'wrong-branch', revision: 'r2', truncated: false, changes: [] });
+  await settle();
+  expect(w.document.getElementById('composerContext')!.hidden).toBe(true);
+  expect(w.document.getElementById('composerGitBranch')!.textContent).toBe('');
+});
+
+it('keeps Git and Files access for a chat whose project grouping was removed', async () => {
+  const project: LocalProject = { id: '33333333-3333-4333-8333-333333333333', name: 'Workspace', path: '/workspace', createdAt: T0, ungrouped: true };
+  const { w } = await boot([], true, [], [project], { gitSnapshot: async projectId => ({ ok: true, data: {
+    projectId, state: 'ready', currentBranch: 'main', revision: 'r1', truncated: false, changes: []
+  } }) });
+  await settle();
+  expect(w.document.getElementById('composerContext')!.hidden).toBe(false);
+  expect(w.document.getElementById('composerGitBranch')!.textContent).toBe('main');
+  const files = w.document.getElementById('sidebarFiles') as HTMLButtonElement;
+  expect(files.disabled).toBe(false);
+  files.click();
+  expect(w.document.getElementById('workDockRight')!.hidden).toBe(false);
+});
+
+it('refreshes composer Git facts after a recorded edit while Files is closed', async () => {
+  const project: LocalProject = { id: '33333333-3333-4333-8333-333333333333', name: 'Workspace', path: '/workspace', createdAt: T0 };
+  let changed = false;
+  const gitSnapshot = vi.fn(async projectId => ({ ok: true, data: { projectId,
+    state: 'ready', currentBranch: 'main', revision: changed ? 'r2' : 'r1', truncated: false,
+    changes: changed ? [{ status: 'M', path: 'src/app.ts', additions: 2, deletions: 0, binary: false }] : [] } }));
+  const { w, append } = await boot([], true, [], [project], { gitSnapshot });
+  expect(w.document.getElementById('workDockRight')!.hidden).toBe(true);
+  changed = true;
+  const edit = toolCall(1, 'edit-1');
+  if (edit.kind !== 'tool_call') throw new Error('Expected tool call fixture');
+  edit.call.changes = [{ path: '/workspace/src/app.ts', added: 2, removed: 0, approximate: false }];
+  await append([edit]);
+  expect(w.document.getElementById('composerGitStats')!.textContent).toBe('+2 −0');
+  expect(gitSnapshot).toHaveBeenCalledTimes(2);
 });
 
 it('patches native reactions in place and hides streamed envelopes without changing authored messages', async () => {
@@ -1405,7 +1475,7 @@ it.each([false, true])('removes a project group in one click, keeps its chats an
   expect(w.document.querySelector('#chatList > .worker-group [data-id="child-session"]')).not.toBeNull();
   expect(w.document.querySelector(`#projectList [data-id="${parent.id}"]`)).toBeNull();
   expect(input.value).toBe('Keep my draft');
-  expect(input.placeholder).toBe('Ask anything…');
+  expect(input.placeholder).toBe('Type / for commands…');
   finishList({ ok: true, data: { sessions: [parent, child], activeId: null, pressure: [], blocked: [] } });
   await settle();
   expect(w.document.querySelector(`[data-project-id="${project.id}"]`)).toBeNull();
@@ -1616,7 +1686,7 @@ it('keeps the sidebar working spinner on one continuous phase across activity re
     }];
     const { w } = await boot([], false, [], [], { sessions: chats });
     const spinner = () => w.document.querySelector<HTMLElement>('.sess[data-id="chat-a"] .session-status.is-active')!;
-    expect(spinner().style.animationDelay).toBe('-100ms');
+    expect(spinner().style.getPropertyValue('--session-spin-delay')).toBe('-100ms');
 
     clock.mockReturnValue(10_450);
     chats[0]!.lastToolCallAt = 10_450;
@@ -1624,7 +1694,7 @@ it('keeps the sidebar working spinner on one continuous phase across activity re
     (w.document.getElementById('chatRefresh') as HTMLButtonElement).click();
     await settle();
     // The row node was rebuilt, but the spinner resumes the wall-clock phase instead of 0deg.
-    expect(spinner().style.animationDelay).toBe('-550ms');
+    expect(spinner().style.getPropertyValue('--session-spin-delay')).toBe('-550ms');
   } finally {
     clock.mockRestore();
   }
@@ -1820,6 +1890,44 @@ it('reviews only an exact recorded edit without expanding its tool row or queryi
   expect(reviewCall).toHaveBeenCalledWith(expect.any(String), edit.call.callId, 0);
   expect(app.w.document.querySelector<HTMLElement>('.review-panel .file-changes-view')?.hidden).toBe(false);
   expect(app.w.document.querySelector('.review-panel .file-preview-meta')?.textContent).toContain('This edit');
+});
+
+it('shows an exact recorded edit inside its tool row', async () => {
+  const edit = toolCall(2, 'inline-edit');
+  if (edit.kind !== 'tool_call') throw new Error('Expected a tool call');
+  edit.call.tool = 'apply_patch';
+  edit.call.summary = { kind: 'edit', title: 'Edited src/main.ts', tone: 'good' };
+  edit.call.changes = [{ path: 'src/main.ts', added: 1, removed: 1, approximate: false, reviewAssetId: 'review.txt' }];
+  const app = await boot([edit]);
+  const reviewCall = vi.fn(async () => ({ ok: true as const, data: {
+    callId: edit.call.callId, changeIndex: 0, path: 'src/main.ts', added: 1, removed: 1,
+    baseText: 'before\n', currentText: 'after\n'
+  } }));
+  app.w.api.getToolEditReview = reviewCall;
+  const row = app.w.document.querySelector<HTMLDetailsElement>('details.tool')!;
+  row.open = true; row.dispatchEvent(new app.w.Event('toggle')); await settle();
+  expect(reviewCall).toHaveBeenCalledWith(expect.any(String), 'inline-edit', 0);
+  expect([...row.querySelectorAll('.tool-inline-review .tool-diff-line')].map(line => line.textContent)).toEqual(['1-before', '1+after']);
+  expect(row.querySelector('.tool-inspect > summary')?.textContent).toBe('Arguments');
+});
+
+it('does not paint a late recorded edit response into a different session', async () => {
+  const edit = toolCall(2, 'late-inline-edit');
+  if (edit.kind !== 'tool_call') throw new Error('Expected a tool call');
+  edit.call.tool = 'apply_patch';
+  edit.call.summary = { kind: 'edit', title: 'Edited src/main.ts', tone: 'good' };
+  edit.call.changes = [{ path: 'src/main.ts', added: 1, removed: 1, approximate: false, reviewAssetId: 'review.txt' }];
+  const app = await boot([edit]);
+  let release: ((value: unknown) => void) | undefined;
+  (app.w.api as any).getToolEditReview = vi.fn(() => new Promise(resolve => { release = resolve; }));
+  const row = app.w.document.querySelector<HTMLDetailsElement>('details.tool')!;
+  row.open = true; row.dispatchEvent(new app.w.Event('toggle'));
+  await settle();
+  app.w.document.getElementById('newChat')!.click();
+  release?.({ ok: true, data: { callId: 'late-inline-edit', changeIndex: 0, path: 'src/main.ts', added: 1, removed: 1,
+    baseText: 'stale', currentText: 'response' } });
+  await settle();
+  expect(app.w.document.querySelector('.tool-inline-review')).toBeNull();
 });
 
 it('does not offer a project diff shortcut in an unfiled chat', async () => {
@@ -2163,7 +2271,7 @@ it('keeps an unfolded tool row as the same open node while the chat keeps append
   expect(group.querySelector('summary')!.title).toContain('4 actions');
 });
 
-it('colors removed lines separately from added lines without changing other tool metrics', async () => {
+it('colors one edit delta while retaining unrelated tool metrics', async () => {
   const edit = toolCall(1, 'edit-lines') as Extract<SessionEvent, { kind: 'tool_call' }>;
   edit.call.tool = 'apply_patch';
   edit.call.summary = { kind: 'edit', tone: 'good', title: 'Edited 2 files', metric: '+28 −11' };
@@ -2178,14 +2286,13 @@ it('colors removed lines separately from added lines without changing other tool
   const { w } = await boot([edit, removal, read]);
   const rows = [...w.document.querySelectorAll<HTMLDetailsElement>('details.tool')];
   expect(rows).toHaveLength(3);
-  expect(rows[0]!.querySelector('summary .metric')?.textContent).toBe('+28 −11');
-  expect(rows[0]!.querySelector('summary .metric-added')?.textContent).toBe('+28');
-  expect(rows[0]!.querySelector('summary .metric-removed')?.textContent).toBe('−11');
-  // The per-call change count beside the title splits the same way.
+  expect(rows[0]!.querySelector('summary .metric')).toBeNull();
+  expect(rows[0]!.querySelector('summary .tool-change-count')?.textContent).toBe('+28 −11');
   expect(rows[0]!.querySelector('summary .tool-change-count .metric-added')?.textContent).toBe('+28');
   expect(rows[0]!.querySelector('summary .tool-change-count .metric-removed')?.textContent).toBe('−11');
-  expect(rows[1]!.querySelector('summary .metric')?.textContent).toBe('~−7');
-  expect(rows[1]!.querySelector('summary .metric-removed')?.textContent).toBe('−7');
+  expect(rows[1]!.querySelector('summary .metric')).toBeNull();
+  expect(rows[1]!.querySelector('summary .tool-change-count')?.textContent).toBe('+0 −7 (approx.)');
+  expect(rows[1]!.querySelector('summary .tool-change-count .metric-removed')?.textContent).toBe('−7');
   expect(rows[2]!.querySelector('summary .metric')?.textContent).toBe('12 lines');
   expect(rows[2]!.querySelector('summary .metric-added, summary .metric-removed')).toBeNull();
 
@@ -2643,7 +2750,7 @@ it('disables empty task actions and confirms saving without the old helper sente
   expect(plan.getAttribute('aria-pressed')).toBe('true');
   plan.click();
   expect(plan.getAttribute('aria-pressed')).toBe('false');
-  expect((w.document.getElementById('chatInput') as HTMLTextAreaElement).placeholder).toBe('Ask anything…');
+  expect((w.document.getElementById('chatInput') as HTMLTextAreaElement).placeholder).toBe('Type / for commands…');
   expect(w.document.getElementById('chatSend')!.title).toBe('');
   const objective = w.document.getElementById('sessionObjective') as HTMLTextAreaElement;
   objective.value = 'Implement and verify'; objective.dispatchEvent(new w.Event('input'));

@@ -2806,6 +2806,22 @@ status checks or waits on the same process inside the existing activity disclosu
 each row on expansion; a failed call breaks the fold. An immediately preceding recorded progress
 line may title that disclosure as the observed activity phase. Tool diff counts and shell/result
 headers are projections of recorded data, not new execution or completion evidence.
+Tool rows keep a compact action summary; arguments and results live in nested disclosures, with
+recorded unified patches shown using old/new line gutters and add/delete colors. Successful
+historical edits load their immutable before/after asset by exact session, call and change index
+when opened, then show a bounded inline line diff. Larger edits retain the existing review dock.
+Missing diff evidence never becomes a reconstructed patch from the current worktree.
+The chat composer has context, editor and controls rows. For an explicitly linked project its
+context uses the read-only project Git snapshot, fenced to the selected session/draft generation;
+truncated snapshots show no partial totals. The retained project association remains usable even
+when its sidebar grouping is removed. Recorded file changes refresh the snapshot while Files is
+closed; a visible refresh control handles external changes without another watcher. The context
+can be dismissed for its current session or draft and restored from the toolbar. Review opens
+the existing Git Changes dock, and the sidebar Files shortcut is disabled without a project. Native
+ChatGPT approval and account identity remain outside the app's authority, so composer controls
+must not claim either as locally configurable facts. The sidebar footer shows the active setup
+profile rather than guessing the ChatGPT account or plan. Default dark appearance uses flat
+charcoal surfaces; saved appearance choices retain their existing priority.
 Setup's Show/Hide guide button stays available even while setup is incomplete. Manual collapse
 survives status pushes. Profile management stays out of first-run Setup: a compact row below
 Language in Appearance has a dropdown, a plus button with a name dialog and a delete button

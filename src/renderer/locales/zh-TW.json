@@ -1687,5 +1687,13 @@
   "{0} estimated tokens": "估算 {0} 個 Token",
   "Daily breakdown": "每日明細",
   "Recommended": "推薦",
-  "Install": "安裝"
+  "Install": "安裝",
+  "Type / for commands…": "輸入 / 查看指令…",
+  "Checking repository…": "正在檢查儲存庫…",
+  "No Git repository": "沒有 Git 儲存庫",
+  "Git unavailable": "Git 無法使用",
+  "Branch unavailable": "分支無法使用",
+  "{0} changed": "已變更 {0} 項",
+  "Hide workspace context": "隱藏工作區內容",
+  "Show workspace context": "顯示工作區內容"
 }
