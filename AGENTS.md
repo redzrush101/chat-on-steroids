@@ -1534,6 +1534,12 @@ canonical source bytes and literal examples remain intact. A reserved user-bubbl
 footer and in-place badge updates keep streaming reactions from shifting messages
 or reloading attachment previews. Old history gains badges when natively reobserved.
 
+Timeline tool groups show translated counts derived from recorded local call kinds, outcomes and
+exact read inputs. Refusals are separate from executed commands; process polls are not launches.
+Single local calls also have a group disclosure. Native progress notes remain inside it, and raw
+arguments, results and attribution facts load only under Inspect recorded payload. Turn boundaries
+and native completion icons retain their existing structural owners.
+
 Continuous recording serves the local transcript, exact identity and continuation infrastructure.
 There is no model-facing session lookup tool. `update_plan` remains recording-backed; historical
 lookup tool calls remain displayable in existing transcripts.

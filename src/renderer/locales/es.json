@@ -1825,5 +1825,16 @@
   "{0} background processes running": "{0} procesos en segundo plano en ejecución",
   "Diagnostics report": "Informe de diagnóstico",
   "Save one file with versions, settings, the connection state and the log, with personal details removed, to attach to a bug report.": "Guarda un archivo con las versiones, los ajustes, el estado de la conexión y el registro, sin datos personales, para adjuntarlo a un informe de error.",
-  "Diagnostics report saved as {0}. Read it before you share it.": "Informe de diagnóstico guardado como {0}. Léelo antes de compartirlo."
+  "Diagnostics report saved as {0}. Read it before you share it.": "Informe de diagnóstico guardado como {0}. Léelo antes de compartirlo.",
+  "Executed 1 command": "1 comando ejecutado",
+  "Executed {0} commands": "{0} comandos ejecutados",
+  "Read 1 file": "1 archivo leído",
+  "Read {0} files": "{0} archivos leídos",
+  "1 edit": "1 edición",
+  "{0} edits": "{0} ediciones",
+  "1 other action": "1 acción más",
+  "{0} other actions": "{0} otras acciones",
+  "Inspect recorded payload": "Inspeccionar datos registrados",
+  "1 failed action": "1 acción fallida",
+  "{0} failed actions": "{0} acciones fallidas"
 }

@@ -19,6 +19,7 @@ import { preserveTimelineViewport, ROUNDING_PX } from './timeline-scroll.js';
 import { createSidebarOrder, SIDEBAR_PROJECT_SCOPE } from './sidebar-order.js';
 import { createSidebarCompletionState } from './sidebar-completion.js';
 import { toolResultText } from './tool-result.js';
+import { executionRecap } from './tool-presentation.js';
 import { chatErrorPresentation, duplicateChatErrors } from './chat-error.js';
 import { renderRecoveryCountdowns } from './recovery.js';
 import type { RecoveryCountdown } from '../shared/recovery.js';
@@ -2202,10 +2203,23 @@ function toolBody(event: Extract<SessionEvent, { kind: 'tool_call' }>, context?:
   const box = document.createElement('details');
   box.className = `tool tone-${call.summary.tone}`;
   box.dataset.outcome = call.outcome;
+  box.dataset.toolKind = call.summary.kind;
+  let files = 1;
+  if (call.summary.kind === 'read') {
+    try {
+      const args = JSON.parse(call.args.text);
+      if (Array.isArray(args.paths) && args.paths.length && args.paths.every((path: unknown) => typeof path === 'string')) files = args.paths.length;
+    } catch { /* Legacy or truncated arguments retain one recorded read. */ }
+  }
+  box.dataset.fileCount = String(files);
   if (call.changes?.length || ['exec_command', 'write_stdin', 'apply_patch'].includes(call.tool)) box.classList.add('is-artifact');
   box.open = openTools.has(call.callId);
   box.addEventListener('toggle', () => {
-    if (box.open) openTools.add(call.callId);
+    if (box.open) {
+      openTools.add(call.callId);
+      const group = box.closest<HTMLDetailsElement>('.tool-group');
+      if (group) group.open = true;
+    }
     else openTools.delete(call.callId);
   });
 
@@ -2363,7 +2377,6 @@ function appendToolOutput(box: HTMLDetailsElement, { call }: Extract<SessionEven
   const facts = el('p', 'raw-facts');
   ui(facts, 'textContent', () => `${call.tool} · ${call.outcome} · ${Math.round(call.durationMs)} ms · ` +
     t("placed by {0}", [ATTRIBUTION_LABELS[call.attribution] ?? call.attribution]));
-  raw.append(facts);
 
   if (call.changes && call.changes.length > 0) {
     const changes = el('ul', 'changes');
@@ -2378,7 +2391,18 @@ function appendToolOutput(box: HTMLDetailsElement, { call }: Extract<SessionEven
     raw.append(changes);
   }
 
-  appendText(() => `${t('Arguments')} · ${call.tool}`, call.args.text, call.args.truncated, call.args.chars);
+  const inspect = document.createElement('details'); inspect.className = 'tool-inspection';
+  inspect.append(el('summary', '', () => t('Inspect recorded payload')));
+  let inspected = false;
+  inspect.addEventListener('toggle', () => {
+    if (!inspect.open || inspected) return;
+    inspected = true;
+    inspect.append(facts, el('h4', '', () => t('Arguments')),
+      textBlock('pre', call.args.text, call.args.truncated, call.args.chars),
+      el('h4', '', () => t('Result')),
+      textBlock('pre', call.result.text, call.result.truncated, call.result.chars));
+  });
+  raw.append(inspect);
   const images = call.assets?.filter(asset => ['image/png', 'image/jpeg', 'image/webp'].includes(asset.mimeType)) ?? [];
   const readable = toolResultText(call.result.text, call.result.truncated, images.length > 0);
   if (readable) appendText(() => `${t('Result')} · ${call.tool} · ${Math.round(call.durationMs)} ms`, readable, call.result.truncated && images.length === 0, call.result.chars);
@@ -3196,7 +3220,7 @@ function groupToolRows(rows: HTMLElement[], scope = selectedId, groups = toolGro
     if (!rows[i]!.matches('.ev-tool_call, .ev-page_tool, .ev-agent_message')) { grouped.push(rows[i++]!); continue; }
     let end = i + 1;
     while (end < rows.length && rows[end]!.matches('.ev-tool_call, .ev-page_tool, .ev-agent_message') && rows[end]!.dataset.activityBoundary === rows[i]!.dataset.activityBoundary) end++;
-    if (end - i === 1) { markNativeStep(rows[i]!, false); grouped.push(rows[i++]!); continue; }
+    if (end - i === 1 && !rows[i]!.matches('.ev-tool_call')) { markNativeStep(rows[i]!, false); grouped.push(rows[i++]!); continue; }
     // Paging can extend or trim the beginning of an activity group. Its first
     // member is therefore not a new disclosure/viewport identity.
     const previous = rows.slice(i, end).map(row => row.closest<HTMLElement>('.tool-group'))
@@ -3213,12 +3237,8 @@ function groupToolRows(rows: HTMLElement[], scope = selectedId, groups = toolGro
       group.addEventListener('toggle', () => { if (group!.open) openTools.add(key); else openTools.delete(key); });
       group.open = openTools.has(key) || rows.slice(i, end).some((row) => row.querySelector('details[open]')); groups.set(key, group);
     }
-    // Name the group after ChatGPT's recap of the round ("Inspected downloads and updated the plan"):
-    // ChatGPT closes each round of work with one, and titles the block with it. The recap is picked
-    // by position, never by wording, so it holds in any language of the page: the native step that
-    // ends a finished round (prose follows it, or the turn is over). It then heads the group instead
-    // of repeating inside it. A step that ends a round still in progress is a note, and a group
-    // without a recap is named after its latest real action ("Ran npm test").
+    // Counts describe recorded local work. Native notes remain inside the disclosure;
+    // their position still determines their icon, never their English wording.
     const members = rows.slice(i, end);
     const finished = end < rows.length ? rows[end] !== turnNow : !(groups === toolGroups && turnWorking);
     const last = members[members.length - 1]!;
@@ -3238,8 +3258,9 @@ function groupToolRows(rows: HTMLElement[], scope = selectedId, groups = toolGro
     const label = observedPhase || latestHead?.querySelector('b')?.textContent
       || latestHead?.querySelector('span:not(.agent-avatar)')?.textContent || t("Activity");
     group.classList.toggle('has-activity-phase', !!observedPhase);
-    group.querySelector('.activity-title')!.textContent = label;
-    const listed = members.filter(row => row !== recap || observedPhase);
+    const calls = members.flatMap(row => [...row.querySelectorAll<HTMLElement>('.tool[data-tool-kind]')]);
+    group.querySelector('.activity-title')!.textContent = calls.length ? executionRecap(calls) : label;
+    const listed = members;
     ui(group.querySelector('summary')!, 'title', () => t("{0} actions · {1}", [listed.length, label]));
     const symbol = latestHead?.querySelector('.ico, .agent-avatar');
     group.querySelector('.activity-symbol')!.replaceChildren(...(symbol ? [symbol.cloneNode(true)] : []));

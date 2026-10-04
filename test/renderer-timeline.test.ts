@@ -1884,7 +1884,7 @@ it('folds a whole Compact & Resume into one row that says the new chat opened', 
   expect(timeline.querySelectorAll('.ev-tool_call')).toHaveLength(2);
   // The card sits where the compaction happened, between the two calls.
   const order = [...timeline.children].map((row) => row.className);
-  expect(order).toEqual(['ev ev-tool_call', 'ev ev-compaction', 'ev ev-tool_call']);
+  expect(order).toEqual(['tool-group', 'ev ev-compaction', 'tool-group']);
 
   // Everything is still there for whoever unfolds the card.
   card.toggleAttribute('open', true);
@@ -1913,7 +1913,7 @@ it('folds a Compact & Resume whose marker ChatGPT escaped as Markdown', async ()
   // Stripped in the form it was recorded in, so no half-removed marker survives either.
   expect(timeline.textContent).not.toContain('[[CLF-');
   expect(timeline.textContent).not.toContain('CLF-RESUME');
-  expect([...timeline.children].map((row) => row.className)).toEqual(['ev ev-tool_call', 'ev ev-compaction', 'ev ev-tool_call']);
+  expect([...timeline.children].map((row) => row.className)).toEqual(['tool-group', 'ev ev-compaction', 'tool-group']);
 
   cards[0]!.toggleAttribute('open', true);
   expect(cards[0]!.textContent).toContain('Brief request');
@@ -2356,7 +2356,7 @@ it('keeps an unfolded tool row as the same open node while the chat keeps append
   expect(detached.some(node => node === group || node === before || (node as Element).contains?.(before))).toBe(false);
   expect(timeline.querySelector('details.tool-group')).toBe(group);
   expect(group.open).toBe(false);
-  expect(group.querySelector('summary')!.textContent).toBe('Read README.md');
+  expect(group.querySelector('summary')!.textContent).toBe('Read 4 files');
   expect(group.querySelector('summary')!.title).toContain('4 actions');
 });
 
@@ -2408,7 +2408,7 @@ it('keeps mixed tool and agent activity in one latest-action disclosure between 
   const timeline = w.document.getElementById('timeline')!;
   const group = timeline.querySelector<HTMLDetailsElement>('.tool-group')!;
   expect(group.open).toBe(false);
-  expect(group.querySelector('.activity-title')!.textContent).toBe('Checking the implementation');
+  expect(group.querySelector('.activity-title')!.textContent).toBe('Read 2 files');
   expect(group.querySelector('.agent-communication summary')!.textContent).toContain('Message from worker-2');
   expect(group.querySelector('.agent-avatar')).not.toBeNull();
   expect(group.querySelectorAll('.ev')).toHaveLength(3);
@@ -2464,7 +2464,7 @@ it('keeps an artifact action as the activity title rather than its tool tag', as
     changes: [{ path: 'src/app.ts', added: 2, removed: 1, approximate: true }]
   } }]);
   const group = w.document.querySelector('.tool-group')!;
-  expect(group.querySelector('.activity-title')!.textContent).toBe('Ran build checks');
+  expect(group.querySelector('.activity-title')!.textContent).toBe('Executed 1 command · Read 1 file');
   expect(group.querySelector('.tool-tag')!.textContent).toBe('shell');
   expect(group.querySelector('.tool-change-count')!.textContent).toContain('approx.');
 });
@@ -4412,19 +4412,20 @@ it('anchors the worked line to your message when the page reports an empty turn 
   expect(lines[0]!.nextElementSibling?.textContent).toContain('quinto arquivo');
 });
 
-it('titles a finished round with the native step that ends it, by position and in any language', async () => {
+it('counts finished local work and retains the native recap, in any language', async () => {
   // ChatGPT closes a round of work with a recap and titles the block with it. It is picked by where
   // it sits, never by its wording: the step that ends the round, once prose follows. Spanish labels.
   const note = (seq: number, label: string): SessionEvent => ({ seq, time: T0 + seq * 1000, source: 'extension', kind: 'page_tool', messageId: `note-${seq}`, label });
   const prose: SessionEvent = { kind: 'assistant_message', seq: 5, time: T0 + 5000, source: 'extension', messageId: 'after-round', message: text('Listo.'), final: true, state: 'final' };
   const { w } = await boot([note(1, 'Planificando la comprobación'), toolCall(2, 'call-a'), toolCall(3, 'call-b'), note(4, 'Se ejecutó la comprobación exacta'), prose]);
   const group = w.document.querySelector<HTMLDetailsElement>('#timeline details.tool-group')!;
-  expect(group.querySelector('.activity-title')!.textContent).toBe('Se ejecutó la comprobación exacta');
+  expect(group.querySelector('.activity-title')!.textContent).toBe('Read 2 files');
   expect(group.querySelector('.activity-symbol .ph-check-circle')).not.toBeNull();
-  // The recap heads the group rather than repeating inside it; the calls and the earlier note stay,
-  // and a step written before any call keeps the globe.
+  // Counts head the group, while the native recap stays reachable with the completed icon.
+  // A step written before any call keeps the globe.
   const inside = [...group.querySelectorAll<HTMLElement>('.tool-group-body .thinking-line')];
-  expect(inside.map(line => line.textContent)).toEqual(['Planificando la comprobación']);
+  expect(inside.map(line => line.textContent)).toEqual(['Planificando la comprobación', 'Se ejecutó la comprobación exacta']);
+  expect(inside[1]!.querySelector('.ph-check-circle')).not.toBeNull();
   expect(inside[0]!.querySelector('.ph-globe-hemisphere-west')).not.toBeNull();
   expect(group.querySelectorAll('.tool-group-body .ev-tool_call')).toHaveLength(2);
 });
@@ -4437,24 +4438,25 @@ const latestCallTitle = (document: Document) => {
   return tool.querySelector('.tool > summary b')?.textContent ?? tool.querySelector('.tool > summary span')?.textContent;
 };
 
-it('names a round still in progress after its latest real action, until prose ends it', async () => {
+it('keeps recorded counts stable when prose completes a round', async () => {
   // The turn still works and nothing follows the step: it is a note, whatever it says, not a recap.
   const { w, append } = await boot([toolCall(2, 'call-a'), toolCall(3, 'call-b'), nativeStep(4, 'Executed exact command check')]);
   expect(latestCallTitle(w.document)).toBeTruthy();
-  expect(groupTitle(w.document)).toBe(latestCallTitle(w.document));
+  expect(groupTitle(w.document)).toBe('Read 2 files');
   const pending = [...w.document.querySelectorAll<HTMLElement>('#timeline .tool-group-body .thinking-line')];
   expect(pending.map(line => line.textContent)).toEqual(['Executed exact command check']);
   expect(pending[0]!.querySelector('.ph-check-circle')).toBeNull();
   // Once prose follows, the same step ends a finished round and titles it.
   await append([{ kind: 'assistant_message', seq: 5, time: T0 + 5000, source: 'extension', messageId: 'after-round', message: text('Done.'), final: true, state: 'final' }]);
-  expect(groupTitle(w.document)).toBe('Executed exact command check');
+  expect(groupTitle(w.document)).toBe('Read 2 files');
+  expect(w.document.querySelector('.tool-group-body .thinking-line')!.textContent).toBe('Executed exact command check');
 });
 
-it('names a finished round that ends in a call after that call, and keeps the globe on a step before its calls', async () => {
+it('counts a finished round and keeps the globe on a native step before its calls', async () => {
   const { w } = await boot([nativeStep(1, 'Searched 3 websites'), toolCall(2, 'call-a'), toolCall(3, 'call-b'),
     { kind: 'assistant_message', seq: 5, time: T0 + 5000, source: 'extension', messageId: 'after-search', message: text('Done.'), final: true, state: 'final' }]);
   expect(latestCallTitle(w.document)).toBeTruthy();
-  expect(groupTitle(w.document)).toBe(latestCallTitle(w.document));
+  expect(groupTitle(w.document)).toBe('Read 2 files');
   expect(w.document.querySelector('#timeline .tool-group-body .thinking-line .ph-globe-hemisphere-west')).not.toBeNull();
 });
 

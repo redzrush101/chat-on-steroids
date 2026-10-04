@@ -1825,5 +1825,16 @@
   "{0} background processes running": "{0} фоновых процессов запущено",
   "Diagnostics report": "Диагностический отчёт",
   "Save one file with versions, settings, the connection state and the log, with personal details removed, to attach to a bug report.": "Сохраняет один файл с версиями, настройками, состоянием подключения и журналом без личных данных, чтобы приложить его к сообщению об ошибке.",
-  "Diagnostics report saved as {0}. Read it before you share it.": "Диагностический отчёт сохранён как {0}. Прочитайте его, прежде чем делиться."
+  "Diagnostics report saved as {0}. Read it before you share it.": "Диагностический отчёт сохранён как {0}. Прочитайте его, прежде чем делиться.",
+  "Executed 1 command": "Выполнена 1 команда",
+  "Executed {0} commands": "Выполнено команд: {0}",
+  "Read 1 file": "Прочитан 1 файл",
+  "Read {0} files": "Прочитано файлов: {0}",
+  "1 edit": "1 изменение",
+  "{0} edits": "Правок: {0}",
+  "1 other action": "1 другое действие",
+  "{0} other actions": "Других действий: {0}",
+  "Inspect recorded payload": "Просмотреть записанные данные",
+  "1 failed action": "1 неудачное действие",
+  "{0} failed actions": "{0} неудачных действий"
 }

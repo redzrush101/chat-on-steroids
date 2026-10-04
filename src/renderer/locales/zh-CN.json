@@ -1825,5 +1825,16 @@
   "{0} background processes running": "{0} 个后台进程正在运行",
   "Diagnostics report": "诊断报告",
   "Save one file with versions, settings, the connection state and the log, with personal details removed, to attach to a bug report.": "将版本、设置、连接状态和日志保存为一个文件（已移除个人信息），可附加到错误报告中。",
-  "Diagnostics report saved as {0}. Read it before you share it.": "诊断报告已保存为 {0}。分享前请先查看内容。"
+  "Diagnostics report saved as {0}. Read it before you share it.": "诊断报告已保存为 {0}。分享前请先查看内容。",
+  "Executed 1 command": "执行了 1 条命令",
+  "Executed {0} commands": "执行了 {0} 条命令",
+  "Read 1 file": "读取了 1 个文件",
+  "Read {0} files": "读取了 {0} 个文件",
+  "1 edit": "1 处编辑",
+  "{0} edits": "{0} 次编辑",
+  "1 other action": "1 项其他操作",
+  "{0} other actions": "{0} 项其他操作",
+  "Inspect recorded payload": "查看记录的数据",
+  "1 failed action": "1 个失败的操作",
+  "{0} failed actions": "{0} 个失败的操作"
 }

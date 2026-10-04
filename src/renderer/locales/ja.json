@@ -1825,5 +1825,16 @@
   "{0} background processes running": "{0} 個のバックグラウンドプロセスを実行中",
   "Diagnostics report": "診断レポート",
   "Save one file with versions, settings, the connection state and the log, with personal details removed, to attach to a bug report.": "バージョン、設定、接続状態、ログを個人情報を除いて1つのファイルに保存します。不具合報告に添付できます。",
-  "Diagnostics report saved as {0}. Read it before you share it.": "診断レポートを {0} として保存しました。共有する前に内容を確認してください。"
+  "Diagnostics report saved as {0}. Read it before you share it.": "診断レポートを {0} として保存しました。共有する前に内容を確認してください。",
+  "Executed 1 command": "1 個のコマンドを実行",
+  "Executed {0} commands": "{0} 個のコマンドを実行",
+  "Read 1 file": "1 個のファイルを読み取り",
+  "Read {0} files": "{0} 個のファイルを読み取り",
+  "1 edit": "1件の編集",
+  "{0} edits": "{0} 件の編集",
+  "1 other action": "その他の操作1件",
+  "{0} other actions": "{0} 件のその他の操作",
+  "Inspect recorded payload": "記録されたデータを確認",
+  "1 failed action": "1 件の失敗した操作",
+  "{0} failed actions": "{0} 件の失敗した操作"
 }

@@ -3861,3 +3861,8 @@ select option::checkmark { order: 1; margin-inline-start: auto; color: var(--ink
   [data-panel='chat'].has-work-dock { grid-template-columns: 0 minmax(0, 1fr); }
   .has-work-dock > .is-session { display: none; }
 }
+
+/* Raw recording payloads stay behind an explicit, lazy inspection disclosure. */
+.tool-inspection > summary { cursor: pointer; padding: 6px 0; color: var(--soft); }
+.tool-inspection > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tool-inspection > .pre { margin-block: 6px; }
